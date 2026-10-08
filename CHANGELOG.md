@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0 - 2026-10-08
+
+### Added
+
+- Add the spike engine with reference nodes
+
 ## 0.0.2 - 2026-10-08
 
 ### Added
