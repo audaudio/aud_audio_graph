@@ -1,3 +1,7 @@
-## 0.0.1
+# Changelog
 
-* TODO: Describe initial release.
+## Unreleased
+
+### Added
+
+- Initial boilerplate

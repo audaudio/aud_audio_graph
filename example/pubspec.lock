@@ -9,6 +9,15 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.13.1"
+  aud_audio_core:
+    dependency: transitive
+    description:
+      path: "."
+      resolved-ref: "7a00bed66647ba929f7a007947459c0da1f71824"
+      tag-pattern: "{{version}}"
+      url: "https://github.com/audaudio/aud_audio_core.git"
+    source: git
+    version: "0.0.1"
   aud_audio_graph:
     dependency: "direct main"
     description:
@@ -16,6 +25,15 @@ packages:
       relative: true
     source: path
     version: "0.0.1"
+  aud_midi_standard:
+    dependency: transitive
+    description:
+      path: "."
+      resolved-ref: b45c6aa1cd74b7074be43ba0ff34fb939eec417d
+      tag-pattern: "{{version}}"
+      url: "https://github.com/audmidi/aud_midi_standard.git"
+    source: git
+    version: "0.1.0"
   boolean_selector:
     dependency: transitive
     description:

@@ -1,0 +1,30 @@
+// @license
+// Copyright (c) Audanika. All Rights Reserved.
+//
+// Use of this source code is governed by terms that can be
+// found in the LICENSE file in the root of this package.
+
+{
+  "name": "aud_audio_graph",
+  "summary": "Audio graph engine of the Audanika Audio Engine: C++ render programs, scheduler, transport, headless host; Dart graph API.",
+  "domain": [
+    "Audio graph engine of the Audanika Audio Engine"
+  ],
+  "interfaces": {
+    "uses": {
+      "aud_audio_core": "package dependency"
+    },
+    "usedBy": {
+      "aud_audio_web": "consumes this package",
+      "aud_audio": "consumes this package",
+      "aud_audio_midi": "consumes this package",
+      "aud_audio_osc": "consumes this package",
+      "aud_audio_sequencer": "consumes this package",
+      "aud_audio_link": "consumes this package",
+      "aud_audio_file": "consumes this package",
+      "aud_audio_vst3": "consumes this package",
+      "aud_audio_clap": "consumes this package",
+      "aud_audio_auv3": "consumes this package"
+    }
+  }
+}
