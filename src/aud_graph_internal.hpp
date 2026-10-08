@@ -51,6 +51,11 @@ constexpr size_t kRetiredPrograms = 8;
 constexpr uint32_t kMaxChannels = 64;
 // The longest delay line in frames an alignment edge may need.
 constexpr uint32_t kMaxAlignmentFrames = 1u << 20;
+// The least frames a tap keeps: 8192 are 170 ms at 48 kHz, enough for a
+// scope that reads once per frame of the UI.
+constexpr uint32_t kMinTapRingFrames = 8192;
+// Retries of a tap read while the realtime thread writes the ring.
+constexpr uint32_t kTapReadAttempts = 16;
 
 struct NodeInstance;
 struct Program;

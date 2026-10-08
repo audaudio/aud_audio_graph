@@ -17,6 +17,8 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <set>
+#include <tuple>
 #include <utility>
 
 #include "aud_graph_internal.hpp"
@@ -59,6 +61,9 @@ struct PoolSlot {
 };
 
 class Compiler {
+  // The ends of a connection: the key of the set of the topology.
+  using Ends = std::tuple<int32_t, uint32_t, int32_t, uint32_t>;
+
  public:
   Compiler(AudGraph* graph, const Topology& topology)
       : graph_(graph), topology_(topology), program_(new Program()) {}
@@ -144,6 +149,7 @@ class Compiler {
   }
 
   bool resolveEdges(int32_t* error) {
+    for (const AudioEdgeId& id : topology_.audio) ends_.insert(endsOf(id));
     // The connections of the topology: live edges, created or revived.
     for (const AudioEdgeId& id : topology_.audio) {
       bool created = false;
@@ -169,11 +175,12 @@ class Compiler {
     return true;
   }
 
+  static Ends endsOf(const AudioEdgeId& id) {
+    return std::make_tuple(id.from, id.fromBus, id.to, id.toBus);
+  }
+
   bool inTopology(const AudioEdgeId& id) const {
-    for (const AudioEdgeId& other : topology_.audio) {
-      if (other.sameEnds(id)) return true;
-    }
-    return false;
+    return ends_.count(endsOf(id)) > 0;
   }
 
   bool addUse(Edge* edge, int32_t* error) {
@@ -352,18 +359,9 @@ class Compiler {
     return id;
   }
 
-  uint32_t newBinding(uint32_t channels) {
-    BusBinding binding;
-    binding.ref = static_cast<uint32_t>(program_->slotRefs.size());
-    binding.channels = channels;
-    for (uint32_t c = 0; c < channels; ++c) {
-      program_->slotRefs.push_back(newSlot(SlotKind::pool, 0, 0));
-    }
-    program_->bindings.push_back(binding);
-    return static_cast<uint32_t>(program_->bindings.size() - 1);
-  }
-
-  uint32_t externalBinding(SlotKind kind, uint32_t bus, uint32_t channels) {
+  // Creates a binding of `channels` slots of one kind: pool buffers, the
+  // channels of the host bus `bus`, or the silence buffer.
+  uint32_t makeBinding(SlotKind kind, uint32_t bus, uint32_t channels) {
     BusBinding binding;
     binding.ref = static_cast<uint32_t>(program_->slotRefs.size());
     binding.channels = channels;
@@ -374,37 +372,21 @@ class Compiler {
     return static_cast<uint32_t>(program_->bindings.size() - 1);
   }
 
-  uint32_t silenceBinding(uint32_t channels) {
-    BusBinding binding;
-    binding.ref = static_cast<uint32_t>(program_->slotRefs.size());
-    binding.channels = channels;
-    for (uint32_t c = 0; c < channels; ++c) {
-      program_->slotRefs.push_back(newSlot(SlotKind::silence, 0, 0));
-    }
-    program_->bindings.push_back(binding);
-    return static_cast<uint32_t>(program_->bindings.size() - 1);
-  }
-
-  uint32_t aliasBinding(uint32_t binding) {
-    program_->bindings.push_back(program_->bindings[binding]);
-    return static_cast<uint32_t>(program_->bindings.size() - 1);
-  }
-
   void allocateOutputs() {
     const uint32_t count = static_cast<uint32_t>(program_->nodes.size());
     outputBindings_.assign(count, {});
     for (uint32_t i = 0; i < count; ++i) {
       for (uint32_t channels : instanceAt(i)->outputChannels) {
-        outputBindings_[i].push_back(newBinding(channels));
+        outputBindings_[i].push_back(makeBinding(SlotKind::pool, 0, channels));
       }
     }
     for (uint32_t bus = 0; bus < graph_->inputChannels.size(); ++bus) {
       graphInputs_.push_back(
-          externalBinding(SlotKind::input, bus, graph_->inputChannels[bus]));
+          makeBinding(SlotKind::input, bus, graph_->inputChannels[bus]));
     }
     for (uint32_t bus = 0; bus < graph_->outputChannels.size(); ++bus) {
       graphOutputs_.push_back(
-          externalBinding(SlotKind::output, bus, graph_->outputChannels[bus]));
+          makeBinding(SlotKind::output, bus, graph_->outputChannels[bus]));
     }
   }
 
@@ -445,9 +427,9 @@ class Compiler {
       if (use.dstNode == dstNode && use.dstBus == dstBus) incoming.push_back(&use);
     }
     if (incoming.empty() && existing == UINT32_MAX && dstNode != kGraphVertex) {
-      return silenceBinding(channels);
+      return makeBinding(SlotKind::silence, 0, channels);
     }
-    const uint32_t binding = existing == UINT32_MAX ? newBinding(channels) : existing;
+    const uint32_t binding = existing == UINT32_MAX ? makeBinding(SlotKind::pool, 0, channels) : existing;
     if (incoming.size() != 1) {
       Job clear;
       clear.kind = JobKind::clear;
@@ -719,6 +701,7 @@ class Compiler {
   const Topology& topology_;
   std::unique_ptr<Program> program_;
   std::map<int32_t, uint32_t> nodeIndex_;
+  std::set<Ends> ends_;
   std::vector<EdgeUse> uses_;
   std::vector<Edge*> created_;
   std::vector<Edge*> revived_;

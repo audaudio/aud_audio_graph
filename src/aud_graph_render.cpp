@@ -490,6 +490,38 @@ uint32_t requestOffset(AudGraph* graph, const AudTransportRequest& request,
   return UINT32_MAX;
 }
 
+// The pending request that takes effect first in [from, frames), or -1;
+// `offset` receives where it takes effect, or `frames`.
+int earliestRequest(AudGraph* graph, uint32_t from, uint32_t frames,
+                    uint32_t* offset) {
+  const InternalTransport& t = graph->transport;
+  *offset = frames;
+  int best = -1;
+  for (uint32_t i = 0; i < kMaxPendingRequests; ++i) {
+    if (!t.pending[i].used) continue;
+    const uint32_t at = requestOffset(graph, t.pending[i].request, from, frames);
+    if (at < *offset) {
+      *offset = at;
+      best = static_cast<int>(i);
+    }
+  }
+  return best;
+}
+
+// Where the loop wraps in [from, frames), or `frames` when it does not.
+uint32_t loopWrapOffset(AudGraph* graph, int64_t position, uint32_t from,
+                        uint32_t frames) {
+  const InternalTransport& t = graph->transport;
+  if (!t.playing || !t.looping || !(t.tempo > 0)) return frames;
+  const int64_t beat = beatAt(graph, position + from);
+  if (beat >= t.loopEnd) return from;
+  const double beats = aud_beats_from_ticks(t.loopEnd - beat);
+  const double toEnd =
+      std::ceil(beats * 60.0 * graph->sampleRate / t.tempo - 1e-9);
+  if (toEnd >= static_cast<double>(frames - from)) return frames;
+  return from + static_cast<uint32_t>(toEnd);
+}
+
 // Captures the segments of the block from the internal transport: the
 // pending requests and the loop split the block where they take effect.
 void captureInternal(AudGraph* graph, uint32_t frames) {
@@ -500,29 +532,8 @@ void captureInternal(AudGraph* graph, uint32_t frames) {
   uint32_t flags = graph->pendingSeek ? AUD_SEGMENT_SEEK : 0;
   while (true) {
     uint32_t bestOffset = frames;
-    int best = -1;
-    for (uint32_t i = 0; i < kMaxPendingRequests; ++i) {
-      if (!t.pending[i].used) continue;
-      const uint32_t at = requestOffset(graph, t.pending[i].request, offset, frames);
-      if (at < bestOffset) {
-        bestOffset = at;
-        best = static_cast<int>(i);
-      }
-    }
-    uint32_t wrapOffset = frames;
-    if (t.playing && t.looping && t.tempo > 0) {
-      const int64_t beat = beatAt(graph, position + offset);
-      if (beat >= t.loopEnd) {
-        wrapOffset = offset;
-      } else {
-        const double beats = aud_beats_from_ticks(t.loopEnd - beat);
-        const double toEnd =
-            std::ceil(beats * 60.0 * graph->sampleRate / t.tempo - 1e-9);
-        if (toEnd < static_cast<double>(frames - offset)) {
-          wrapOffset = offset + static_cast<uint32_t>(toEnd);
-        }
-      }
-    }
+    const int best = earliestRequest(graph, offset, frames, &bestOffset);
+    const uint32_t wrapOffset = loopWrapOffset(graph, position, offset, frames);
     const uint32_t next = std::min(bestOffset, wrapOffset);
     if (next > offset) {
       fillSegment(graph, &graph->segments[numSegments++], offset, next - offset,
@@ -559,6 +570,12 @@ void captureInternal(AudGraph* graph, uint32_t frames) {
   graph->snapshot.time = graph->streamTime;
 }
 
+// A single stopped segment over the block, when no transport says more.
+void stoppedSegment(AudGraph* graph, uint32_t frames) {
+  fillSegment(graph, &graph->segments[0], 0, frames, 0);
+  graph->segments[0].flags &= ~uint32_t{AUD_SEGMENT_PLAYING};
+}
+
 void captureTransport(AudGraph* graph, const AudRenderRequest* request) {
   const uint32_t frames = request->frames;
   if (request->transport != nullptr &&
@@ -573,8 +590,7 @@ void captureTransport(AudGraph* graph, const AudRenderRequest* request) {
     graph->snapshot.segments = graph->segments;
     graph->snapshot.time = graph->streamTime;
     if (count == 0) {
-      fillSegment(graph, &graph->segments[0], 0, frames, 0);
-      graph->segments[0].flags &= ~uint32_t{AUD_SEGMENT_PLAYING};
+      stoppedSegment(graph, frames);
       graph->snapshot.num_segments = 1;
     }
     return;
@@ -587,8 +603,7 @@ void captureTransport(AudGraph* graph, const AudRenderRequest* request) {
         provider.provider, &graph->streamTime, graph->segments, kMaxSegments,
         &count);
     if (result != AUD_OK || count == 0) {
-      fillSegment(graph, &graph->segments[0], 0, frames, 0);
-      graph->segments[0].flags &= ~uint32_t{AUD_SEGMENT_PLAYING};
+      stoppedSegment(graph, frames);
       count = 1;
     }
     graph->snapshot.struct_size = sizeof(AudTransportSnapshot);
@@ -1453,10 +1468,22 @@ void emitEvent(AudGraph* graph, void* instance, const AudEvent* event) {
   const uint32_t frames = graph->streamTime.frames;
   const uint32_t offset =
       std::min(event->sample_offset, frames == 0 ? 0 : frames - 1);
-  for (const EventRoute& route : program->routes) {
-    if (route.fromNode < current) continue;
-    if (route.fromNode > current) break;
-    if (route.fromPort != event->port) continue;
+  // The routes are sorted by (node, port): the first match is found by
+  // binary search, the loop stops at the first other port.
+  EventRoute key;
+  key.fromNode = current;
+  key.fromPort = event->port;
+  const auto routesEnd = program->routes.end();
+  auto it = std::lower_bound(
+      program->routes.begin(), routesEnd, key,
+      [](const EventRoute& a, const EventRoute& b) {
+        return a.fromNode < b.fromNode ||
+               (a.fromNode == b.fromNode && a.fromPort < b.fromPort);
+      });
+  for (; it != routesEnd && it->fromNode == current &&
+         it->fromPort == event->port;
+       ++it) {
+    const EventRoute& route = *it;
     if (route.toNode == kGraphTarget) {
       AudGraphNotification n = makeNotification(graph, AUD_NOTIFY_EVENT);
       n.node = node.instance->handle;

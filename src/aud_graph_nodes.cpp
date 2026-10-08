@@ -23,6 +23,9 @@ namespace {
 
 constexpr double kTwoPi = 6.283185307179586;
 constexpr uint32_t kMaxChannelsOfNode = 16;
+// The damping of the filter is k = 2 - kResonanceRange * resonance: at
+// full resonance k stays at 0.05, just short of self-oscillation.
+constexpr float kResonanceRange = 1.95f;
 
 // Clamps a channel count to what the reference nodes render.
 uint32_t channelsOf(const AudAudioBus& bus) {
@@ -305,7 +308,7 @@ class Filter : public AudNodeBase {
                                            rate * 0.49);
     const float g = static_cast<float>(std::tan(3.141592653589793 * cutoff /
                                                 rate));
-    const float k = 2.0f - 1.95f * std::min(1.0f, std::max(0.0f, param(
+    const float k = 2.0f - kResonanceRange * std::min(1.0f, std::max(0.0f, param(
                                          AUD_FILTER_PARAM_RESONANCE)));
     const float a1 = 1.0f / (1.0f + g * (g + k));
     const float a2 = g * a1;

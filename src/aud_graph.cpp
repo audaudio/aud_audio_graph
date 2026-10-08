@@ -282,6 +282,18 @@ bool isLive(const NodeInstance* instance) {
   return instance != nullptr && !instance->retired;
 }
 
+// Pushes a command into the event queue with the next sequence number; a
+// full queue refuses, nothing is dropped silently (interop-002).
+int32_t enqueueCommand(AudGraph* graph, Command command) {
+  command.sequence = graph->nextSequence;
+  if (!graph->commands->push(command)) {
+    graph->rejected.fetch_add(1, std::memory_order_relaxed);
+    return AUD_ERROR_QUEUE_FULL;
+  }
+  graph->nextSequence += 1;
+  return AUD_OK;
+}
+
 // ............................................................................
 // Instances
 
@@ -300,7 +312,7 @@ int32_t prepareInstance(AudGraph* graph, NodeInstance* instance) {
   if (instance->builtin == Builtin::tap) {
     TapState& tap = instance->tap;
     tap.channels = instance->inputChannels[0];
-    tap.ringFrames = std::max(maxFrames * 2, uint32_t{8192});
+    tap.ringFrames = std::max(maxFrames * 2, kMinTapRingFrames);
     tap.ring.assign(static_cast<size_t>(tap.ringFrames) * tap.channels, 0.0f);
     tap.writePos = 0;
     for (uint32_t c = 0; c < kMaxChannels; ++c) {
@@ -1081,13 +1093,7 @@ AUD_EXPORT int32_t aud_graph_send_event(AudGraph* graph, int32_t node,
       return AUD_ERROR_CAPACITY;
     }
   }
-  command.sequence = graph->nextSequence;
-  if (!graph->commands->push(command)) {
-    graph->rejected.fetch_add(1, std::memory_order_relaxed);
-    return AUD_ERROR_QUEUE_FULL;
-  }
-  graph->nextSequence += 1;
-  return AUD_OK;
+  return enqueueCommand(graph, command);
 }
 
 AUD_EXPORT int32_t aud_graph_cancel(AudGraph* graph, int32_t node,
@@ -1102,13 +1108,7 @@ AUD_EXPORT int32_t aud_graph_cancel(AudGraph* graph, int32_t node,
   command.kind = CommandKind::cancel;
   command.instance = instance;
   command.id = id;
-  command.sequence = graph->nextSequence;
-  if (!graph->commands->push(command)) {
-    graph->rejected.fetch_add(1, std::memory_order_relaxed);
-    return AUD_ERROR_QUEUE_FULL;
-  }
-  graph->nextSequence += 1;
-  return AUD_OK;
+  return enqueueCommand(graph, command);
 }
 
 AUD_EXPORT int32_t aud_graph_set_string(AudGraph* graph, int32_t node,
@@ -1138,13 +1138,7 @@ AUD_EXPORT int32_t aud_graph_transport(AudGraph* graph,
   Command command;
   command.kind = CommandKind::transport;
   command.request = *request;
-  command.sequence = graph->nextSequence;
-  if (!graph->commands->push(command)) {
-    graph->rejected.fetch_add(1, std::memory_order_relaxed);
-    return AUD_ERROR_QUEUE_FULL;
-  }
-  graph->nextSequence += 1;
-  return AUD_OK;
+  return enqueueCommand(graph, command);
 }
 
 AUD_EXPORT int32_t aud_graph_transport_state(AudGraph* graph,
@@ -1269,7 +1263,7 @@ AUD_EXPORT int32_t aud_graph_tap_read(AudGraph* graph, int32_t node,
     return AUD_ERROR_INVALID_ARGUMENT;
   }
   // A seqlock: the generation is odd while the realtime thread writes.
-  for (int attempt = 0; attempt < 16; ++attempt) {
+  for (uint32_t attempt = 0; attempt < kTapReadAttempts; ++attempt) {
     const uint32_t before = tap.generation.load(std::memory_order_acquire);
     if (before & 1) continue;
     const uint32_t writePos = tap.writePos;
