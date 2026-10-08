@@ -6,9 +6,15 @@
 
 {
   "name": "aud_audio_graph",
-  "summary": "Audio graph engine of the Audanika Audio Engine: C++ render programs, scheduler, transport, headless host; Dart graph API.",
+  "summary": "Audio graph engine of the Audanika Audio Engine: C++ render programs with persistent node instances, transactions, realtime queues, scheduler, transport, offline renderer; Dart graph API and graph document.",
   "domain": [
-    "Audio graph engine of the Audanika Audio Engine"
+    "C API aud_audio_graph.h on ABI 0.3: lifecycle (lifecycle-001), node instances, transactions, commands, render function (plugin-002), notifications, taps",
+    "Compiler: topological order, feedback nodes split into reader and writer, latency alignment with the low-latency opt-out, buffer reuse by lifetime (graph-001)",
+    "Realtime path: adoption of programs with fades and retirement (graph-003), parameter and event queues, time-ordered scheduler with leads, running-note tracker, lossy taps (interop-002)",
+    "Time and transport: time filter feed, synthesized host time, internal transport with segments per block, registered providers (time-001)",
+    "Reference nodes aud.graph.oscillator, aud.graph.mixer, aud.graph.filter, aud.graph.feedback, aud.graph.tap",
+    "Dart: AudGraph, AudNode, AudGraphTransaction, AudGraphNotification, AudGraphDocument (JSON schema), AudOfflineRenderer, AudWavFile",
+    "Native tests under the address and undefined behaviour sanitizers: scripts/test-native.js"
   ],
   "interfaces": {
     "uses": {

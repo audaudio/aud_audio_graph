@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://audaudio.github.io/schemas/aud_graph_document.schema.json",
+  "title": "Audanika Audio Engine graph document",
+  "description": "The buses, nodes, connections and transport settings of one graph of the Audanika Audio Engine.",
+  "type": "object",
+  "required": [
+    "schema"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "channels": {
+      "description": "The channel count of each bus.",
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "nodeId": {
+      "description": "A node id, or \"graph\" for the graph itself.",
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+    },
+    "index": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "properties": {
+    "schema": {
+      "description": "The version of this schema.",
+      "const": 1
+    },
+    "name": {
+      "description": "The name of the graph.",
+      "type": "string"
+    },
+    "inputChannels": {
+      "$ref": "#/$defs/channels"
+    },
+    "outputChannels": {
+      "$ref": "#/$defs/channels"
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "type"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/$defs/nodeId"
+          },
+          "type": {
+            "description": "The type id, e.g. aud.graph.oscillator.",
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
+          },
+          "inputChannels": {
+            "$ref": "#/$defs/channels"
+          },
+          "outputChannels": {
+            "$ref": "#/$defs/channels"
+          },
+          "delayFrames": {
+            "description": "The delay of a feedback node in frames.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "preset": {
+            "description": "The node preset (aud_node_preset.schema.json).",
+            "$ref": "https://audaudio.github.io/schemas/aud_node_preset.schema.json"
+          }
+        }
+      }
+    },
+    "connections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "from",
+          "to"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "$ref": "#/$defs/nodeId"
+          },
+          "fromBus": {
+            "$ref": "#/$defs/index"
+          },
+          "to": {
+            "$ref": "#/$defs/nodeId"
+          },
+          "toBus": {
+            "$ref": "#/$defs/index"
+          },
+          "lowLatency": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "eventConnections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "from",
+          "to"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "$ref": "#/$defs/nodeId"
+          },
+          "fromPort": {
+            "$ref": "#/$defs/index"
+          },
+          "to": {
+            "$ref": "#/$defs/nodeId"
+          },
+          "toPort": {
+            "$ref": "#/$defs/index"
+          }
+        }
+      }
+    },
+    "transport": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tempo": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "numerator": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "denominator": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "loopStart": {
+          "type": "number"
+        },
+        "loopEnd": {
+          "type": "number"
+        }
+      }
+    }
+  }
+}

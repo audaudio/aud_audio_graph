@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Build the audio graph engine (S2)
+
+- Replace the spike chain by compiled render programs on ABI 0.3
+- Add transactions with fades and retirement, queues and a scheduler
+- Add the internal transport, the time filter feed and the offline renderer
+- Add the Dart graph API, the graph document and the native tests
+
+## 0.2.0 - 2026-10-08
+
+### Changed
+
+- Build the audio graph engine on ABI 0.3 (ticket 19, step S2)
+- Replace the spike chain by compiled render programs with persistent
+node instances, transactions, fades and retirement
+- Add the realtime queues, the scheduler, the running-note tracker and
+the notification thread
+- Add the internal transport, the time filter feed and the offline
+renderer
+- Add the reference nodes oscillator, mixer, filter, feedback and tap
+- Add the Dart graph API, the graph document with its JSON schema and
+the native tests under the sanitizers
+
 ## 0.1.0 - 2026-10-08
 
 ### Added

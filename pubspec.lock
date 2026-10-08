@@ -39,9 +39,9 @@ packages:
       path: "../aud_audio_core"
       relative: true
     source: path
-    version: "0.2.0"
+    version: "0.3.0"
   aud_midi_standard:
-    dependency: transitive
+    dependency: "direct dev"
     description:
       path: "."
       resolved-ref: b45c6aa1cd74b7074be43ba0ff34fb939eec417d

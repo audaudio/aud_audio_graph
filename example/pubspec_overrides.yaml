@@ -1,0 +1,7 @@
+# Overrides the git dependency of aud_audio_graph on aud_audio_core with the
+# sibling checkout of this workspace, so that the example resolves before
+# the core tag of the ticket exists. Relative, so it travels with the ticket
+# branch like the override of the package itself.
+dependency_overrides:
+  aud_audio_core:
+    path: ../../aud_audio_core
