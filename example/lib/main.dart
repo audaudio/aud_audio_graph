@@ -11,7 +11,8 @@ void main() {
   runApp(const AudGraphExampleApp());
 }
 
-/// Lists the node types of a spike engine and renders one block offline.
+/// Lists the node types of a graph and renders the reference chain
+/// oscillator → filter → gain → output offline.
 class AudGraphExampleApp extends StatefulWidget {
   /// Creates the example app.
   const AudGraphExampleApp({super.key});
@@ -21,19 +22,42 @@ class AudGraphExampleApp extends StatefulWidget {
 }
 
 class _AudGraphExampleAppState extends State<AudGraphExampleApp> {
-  final AudEngine _engine = AudEngine();
-  late final List<AudNodeTypeInfo> _types = _engine.nodeTypes;
+  final AudGraph _graph = AudGraph(maxFrames: 256, outputChannels: const [1]);
+  late final _types = _graph.nodeTypes;
   late final double _peak = _renderPeak();
 
   double _renderPeak() {
-    final sine = _engine.createNode('aud.ref.sine');
-    _engine.setChain([sine]);
-    return _engine.render(_engine.maxFrames).reduce((a, b) => a > b ? a : b);
+    final osc = _graph.createNode('aud.graph.oscillator', name: 'osc');
+    final filter = _graph.createNode(
+      'aud.graph.filter',
+      name: 'filter',
+      inputChannels: const [1],
+      outputChannels: const [1],
+    );
+    final gain = _graph.createNode(
+      'aud.core.gain',
+      name: 'gain',
+      inputChannels: const [1],
+      outputChannels: const [1],
+    );
+    _graph.setParam(filter, 'cutoff', 500);
+    _graph.setParam(gain, 'gain', 0.8);
+    _graph.transaction((tx) {
+      tx.connect(osc, filter);
+      tx.connect(filter, gain);
+      tx.connect(gain, _graph.io);
+    });
+    _graph.start();
+    final output = AudOfflineRenderer(_graph).render(frames: 4800);
+    _graph.stop();
+    return output.single.single
+        .map((v) => v.abs())
+        .reduce((a, b) => a > b ? a : b);
   }
 
   @override
   void dispose() {
-    _engine.dispose();
+    _graph.dispose();
     super.dispose();
   }
 
@@ -47,10 +71,10 @@ class _AudGraphExampleAppState extends State<AudGraphExampleApp> {
           children: [
             for (final type in _types)
               ListTile(
-                title: Text(type.id),
+                title: Text(type.typeId),
                 subtitle: Text(type.params.map((p) => p.id).join(', ')),
               ),
-            Text('Peak of one rendered block: ${_peak.toStringAsFixed(3)}'),
+            Text('Peak of the rendered chain: ${_peak.toStringAsFixed(3)}'),
           ],
         ),
       ),

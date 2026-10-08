@@ -37,13 +37,13 @@ packages:
     dependency: "direct main"
     description:
       path: "."
-      resolved-ref: "47e125c46f7c786a55bf00ddfd75c073ee56c70a"
+      resolved-ref: "09c9905bc71020466db6209be81535d8d6c1a23a"
       tag-pattern: "{{version}}"
       url: "git@github.com:audaudio/aud_audio_core.git"
     source: git
-    version: "0.1.0"
+    version: "0.3.0"
   aud_midi_standard:
-    dependency: transitive
+    dependency: "direct dev"
     description:
       path: "."
       resolved-ref: b45c6aa1cd74b7074be43ba0ff34fb939eec417d

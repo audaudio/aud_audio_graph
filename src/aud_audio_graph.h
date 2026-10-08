@@ -4,14 +4,30 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
-// The C API of the spike engine of aud_audio_graph (ticket 5, S0-mobile).
+// The C API of the audio graph engine of aud_audio_graph (ticket 19, S2).
 //
-// The engine hosts node types registered through the C ABI of
-// aud_audio_core, renders a serial chain of node instances block by block on
-// the realtime thread, and takes parameter changes and events from a
-// lock-free command queue with defined overflow behaviour (interop-002).
-// Opaque pointers cross this API as void*: the ABI structs live only in
-// aud_audio_core. Ticket S2 replaces the chain by compiled render programs.
+// A graph hosts node types registered through the C ABI of aud_audio_core
+// and renders persistent node instances through immutable render programs
+// (graph-001, graph-003): the control thread edits the topology in
+// transactions, each commit compiles a program and publishes it, the
+// realtime thread adopts it at the next block start and acknowledges the
+// revision. Removed nodes and connections fade out, new connections fade
+// in, nodes with a tail render it out before they are freed. Parameter
+// changes, events and transport requests travel through lock-free queues
+// with fixed capacities and defined overflow rules (interop-002); events
+// carry timestamps of any domain of time-001 and wait in a bounded
+// scheduler until their block. The engine never calls into Dart from the
+// realtime thread: a notification thread wakes the listener, the control
+// thread takes the notifications.
+//
+// Threads: every function is tagged. [control] functions are called from
+// one thread, the control thread; [realtime] from the thread of the stream
+// callback or the plugin host. Node handles are positive integers that are
+// never reused; the handle 0 names the graph itself: its input buses are
+// the outputs of node 0, its output buses the inputs of node 0, the events
+// a host hands to aud_graph_render leave node 0's event output 0, and
+// events a node emits into node 0's event input 0 reach the control thread
+// as notifications.
 
 #ifndef AUD_AUDIO_GRAPH_H
 #define AUD_AUDIO_GRAPH_H
@@ -24,102 +40,414 @@
 extern "C" {
 #endif
 
-typedef struct AudEngine AudEngine;
+typedef struct AudGraph AudGraph;
 
-// How an engine is created.
-typedef struct AudEngineConfig {
+// The type ids of the nodes the engine registers itself.
+#define AUD_GRAPH_FEEDBACK_TYPE_ID "aud.graph.feedback"
+#define AUD_GRAPH_TAP_TYPE_ID "aud.graph.tap"
+#define AUD_GRAPH_OSCILLATOR_TYPE_ID "aud.graph.oscillator"
+#define AUD_GRAPH_MIXER_TYPE_ID "aud.graph.mixer"
+#define AUD_GRAPH_FILTER_TYPE_ID "aud.graph.filter"
+
+// The handle of the graph itself.
+#define AUD_GRAPH_NODE 0
+
+// The id of the internal transport provider.
+#define AUD_GRAPH_INTERNAL_TRANSPORT_ID "aud.graph.transport"
+
+// The lifecycle states of a graph (lifecycle-001).
+enum {
+  AUD_GRAPH_CREATED = 0,
+  AUD_GRAPH_PREPARED = 1,
+  AUD_GRAPH_RUNNING = 2,
+  AUD_GRAPH_SUSPENDED = 3,
+  AUD_GRAPH_STOPPED = 4,
+  AUD_GRAPH_DISPOSED = 5,
+};
+
+// Flags of a graph.
+enum {
+  // Late events are dropped instead of played at the block start.
+  AUD_GRAPH_DROP_LATE_EVENTS = 1 << 0,
+};
+
+// Flags of a connection.
+enum {
+  // The connection opts out of the latency alignment at its destination:
+  // the signal arrives as early as possible (graph-001).
+  AUD_CONNECTION_LOW_LATENCY = 1 << 0,
+};
+
+// The parameters of the reference nodes.
+enum {
+  AUD_OSCILLATOR_PARAM_FREQUENCY = 0,
+  AUD_OSCILLATOR_PARAM_AMPLITUDE = 1,
+  AUD_OSCILLATOR_PARAM_WAVEFORM = 2,  // 0 sine, 1 saw, 2 square, 3 triangle
+  AUD_MIXER_NUM_INPUTS = 8,
+  AUD_MIXER_PARAM_MASTER = 8,  // gains 0..7 are the input gains
+  AUD_FILTER_PARAM_CUTOFF = 0,
+  AUD_FILTER_PARAM_RESONANCE = 1,
+  AUD_FILTER_PARAM_MODE = 2,  // 0 low, 1 high, 2 band, 3 notch
+};
+
+// How a graph is created. Zero means the default.
+typedef struct AudGraphConfig {
   uint32_t struct_size;
   double sample_rate;
-  uint32_t max_frames;  // the largest block aud_engine_render receives
-  uint32_t channels;    // channels of every bus and of the output
-  uint32_t command_queue_capacity;  // 0 = 1024
-  uint32_t max_nodes;               // 0 = 64
-} AudEngineConfig;
+  uint32_t max_frames;  // the largest block aud_graph_render receives
+  uint32_t num_input_buses;
+  const uint32_t* input_channels;  // channels per graph input bus
+  uint32_t num_output_buses;
+  const uint32_t* output_channels;  // channels per graph output bus
+  uint32_t flags;                   // AUD_GRAPH_*
+  uint32_t max_nodes;               // 0 = 256
+  uint32_t max_connections;         // 0 = 1024
+  uint32_t param_queue_capacity;    // 0 = 1024
+  uint32_t event_queue_capacity;    // 0 = 4096
+  uint32_t scheduler_capacity;      // 0 = 4096
+  uint32_t notification_capacity;   // 0 = 1024
+  uint32_t max_events_per_block;    // 0 = 1024, the budget of interop-002
+  uint32_t fade_frames;             // 0 = 5 ms at the sample rate
+  uint32_t max_tail_frames;         // 0 = 10 s at the sample rate
+  int64_t lookahead_ns;             // 0 = 10 s
+} AudGraphConfig;
 
-// Counters the realtime thread keeps; read with aud_engine_get_stats.
-typedef struct AudEngineStats {
+// How a node instance is created: its bus formats. NULL or zero bus counts
+// take the default channels of the descriptor.
+typedef struct AudNodeConfig {
   uint32_t struct_size;
-  uint32_t program_revision;  // the chain revision the realtime thread uses
+  uint32_t num_input_buses;  // the descriptor's count, or 0
+  const uint32_t* input_channels;
+  uint32_t num_output_buses;
+  const uint32_t* output_channels;
+  uint32_t delay_frames;  // aud.graph.feedback: the delay; 0 = max_frames
+  uint32_t reserved;
+} AudNodeConfig;
+
+// What the engine reports to the control thread.
+enum {
+  // The realtime thread adopted `revision`.
+  AUD_NOTIFY_REVISION = 1,
+  // The realtime thread rendered the first block in the state `code`.
+  AUD_NOTIFY_STATE = 2,
+  // The retired `node` finished its fade or tail and was freed.
+  AUD_NOTIFY_NODE_DONE = 3,
+  // A diagnostic with the result code `code`, `count` occurrences in the
+  // block, for `node` (0 for the graph): AUD_ERROR_LATE (late events
+  // played or dropped), AUD_ERROR_RETIRED (events of a retired node
+  // dropped), AUD_ERROR_QUEUE_FULL (block or notification capacity
+  // exceeded, entries dropped), AUD_ERROR_CAPACITY (scheduler or note
+  // tracker full), AUD_ERROR_OVERLOAD (the block took longer than it
+  // lasts; `value` holds the render time in ns), AUD_ERROR_UNSUPPORTED
+  // (the transport refused a request).
+  AUD_NOTIFY_DIAGNOSTIC = 4,
+  // `node` emitted `event` into the graph's event input.
+  AUD_NOTIFY_EVENT = 5,
+  // The transport changed: `code` the request type applied, `value` the
+  // beat in ticks, `number` the tempo, `count` 1 while playing.
+  AUD_NOTIFY_TRANSPORT = 6,
+  // The time filter reset `count` times.
+  AUD_NOTIFY_TIME_RESET = 7,
+};
+
+// A notification of the realtime thread.
+typedef struct AudGraphNotification {
+  uint32_t struct_size;
+  uint32_t type;  // AUD_NOTIFY_*
+  int32_t node;
+  int32_t code;
+  uint32_t revision;
+  uint32_t count;
+  int64_t sample_position;  // the block it happened in
+  int64_t value;
+  double number;
+  AudEvent event;
+} AudGraphNotification;
+
+// The counters of a graph.
+typedef struct AudGraphStats {
+  uint32_t struct_size;
+  uint32_t state;
+  uint32_t revision;  // the adopted revision
+  uint32_t scheduled;  // events waiting in the scheduler
   uint64_t blocks_rendered;
   uint64_t frames_rendered;
-  uint64_t commands_applied;
-  uint64_t commands_rejected;  // enqueue refused because the queue was full
-  int64_t command_latency_min_ns;  // enqueue to apply at the block start
-  int64_t command_latency_max_ns;
-  int64_t command_latency_sum_ns;
-  uint64_t command_latency_count;
-  int64_t render_time_max_ns;  // time spent inside aud_engine_render
+  int64_t render_time_max_ns;
   int64_t render_time_sum_ns;
+  uint64_t events_delivered;
+  uint64_t events_late;
+  uint64_t events_dropped;
+  uint64_t params_applied;
+  uint64_t rejected;  // enqueues the control thread refused
+  uint64_t notifications_dropped;
+  uint64_t overloads;
+  uint32_t time_filter_resets;
+  uint32_t reserved;
   float output_peak;  // the largest absolute output sample since the reset
-} AudEngineStats;
+} AudGraphStats;
 
-// [control] Creates an engine with the reference node types registered.
-AUD_EXPORT AudEngine* aud_engine_create(const AudEngineConfig* config);
+// The transport as the realtime thread last saw it.
+typedef struct AudGraphTransportState {
+  uint32_t struct_size;
+  uint32_t playing;
+  int64_t beat;  // ticks
+  double tempo;
+  uint32_t numerator;
+  uint32_t denominator;
+  uint32_t looping;
+  uint32_t reserved;
+  int64_t loop_start;
+  int64_t loop_end;
+} AudGraphTransportState;
 
-// [control] Destroys the engine and every node instance. Stop rendering
-// first.
-AUD_EXPORT void aud_engine_destroy(AudEngine* engine);
+// Rendering offline: `frames` frames in blocks of `block_frames`, or in the
+// cycle of `block_sizes`, from `inputs` into `outputs` (planar, `frames`
+// long, as many buses as the graph has; NULL inputs are silent) on a
+// virtual timeline: the host time runs from `start_host_time_ns` with the
+// sample clock.
+typedef struct AudOfflineRequest {
+  uint32_t struct_size;
+  uint32_t frames;
+  uint32_t block_frames;  // 0 = max_frames
+  uint32_t num_block_sizes;
+  const uint32_t* block_sizes;
+  const AudAudioBus* inputs;
+  const AudAudioBus* outputs;
+  int64_t start_sample_position;
+  int64_t start_host_time_ns;
+} AudOfflineRequest;
 
-// [control] The AudHostApi* packages register their node types with.
-AUD_EXPORT const void* aud_engine_host_api(AudEngine* engine);
+// Wakes the control thread: notifications wait. Called on the notification
+// thread, never on the realtime thread.
+typedef void (*AudGraphListener)(void* user);
+
+// ............................................................................
+// Lifecycle (lifecycle-001)
+
+// [control] Creates a graph in the created state with the reference nodes
+// registered; NULL for an invalid configuration.
+AUD_EXPORT AudGraph* aud_graph_create(const AudGraphConfig* config);
+
+// [control] Destroys the graph and every instance. The stream must have
+// stopped calling aud_graph_render.
+AUD_EXPORT void aud_graph_destroy(AudGraph* graph);
+
+// [control] Prepares every instance for a sample rate and a largest block
+// (0 keeps the current value), resets the time filter and the transport
+// snapshot and recompiles the program; AUD_ERROR_STATE while running.
+AUD_EXPORT int32_t aud_graph_prepare(AudGraph* graph, double sample_rate,
+                                     uint32_t max_frames);
+
+// [control] Starts rendering from the prepared or stopped state.
+AUD_EXPORT int32_t aud_graph_start(AudGraph* graph);
+
+// [control] Suspends rendering: blocks render silence, the transport and
+// the pending events stay. Returns when no render is in flight.
+AUD_EXPORT int32_t aud_graph_suspend(AudGraph* graph);
+
+// [control] Resumes rendering after a suspension.
+AUD_EXPORT int32_t aud_graph_resume(AudGraph* graph);
+
+// [control] Stops rendering: running notes are closed, the transport stops
+// and the time filter resets. Returns when no render is in flight.
+AUD_EXPORT int32_t aud_graph_stop(AudGraph* graph);
+
+// [control] The AUD_GRAPH_* state.
+AUD_EXPORT int32_t aud_graph_state(AudGraph* graph);
+
+// [control] The prepared sample rate.
+AUD_EXPORT double aud_graph_sample_rate(AudGraph* graph);
+
+// [control] The prepared largest block.
+AUD_EXPORT uint32_t aud_graph_max_frames(AudGraph* graph);
+
+// ............................................................................
+// Node types and instances
+
+// [control] The AudHostApi* packages register their node types and
+// transport providers with.
+AUD_EXPORT const AudHostApi* aud_graph_host_api(AudGraph* graph);
 
 // [control] The registered node types.
-AUD_EXPORT int32_t aud_engine_num_node_types(AudEngine* engine);
-AUD_EXPORT const char* aud_engine_node_type_id(AudEngine* engine, int32_t index);
-AUD_EXPORT const char* aud_engine_node_type_name(AudEngine* engine, int32_t index);
-AUD_EXPORT uint32_t aud_engine_node_type_capabilities(AudEngine* engine, int32_t index);
-AUD_EXPORT int32_t aud_engine_node_type_num_params(AudEngine* engine, int32_t index);
-// Fills the parameter's id, unit and range; AUD_OK or an error code.
-AUD_EXPORT int32_t aud_engine_node_type_param(AudEngine* engine, int32_t index,
-                                              uint32_t param, const char** id,
-                                              const char** unit, float* min_value,
-                                              float* max_value, float* default_value);
+AUD_EXPORT int32_t aud_graph_num_node_types(AudGraph* graph);
+AUD_EXPORT const AudNodeDescriptor* aud_graph_node_type(AudGraph* graph,
+                                                        int32_t index);
+AUD_EXPORT const AudNodeDescriptor* aud_graph_node_type_by_id(
+    AudGraph* graph, const char* type_id);
 
-// [control] Creates a node instance of a registered type; returns the node
-// id (>= 0) or an error code (< 0).
-AUD_EXPORT int32_t aud_engine_create_node(AudEngine* engine, const char* type_id);
+// [control] Creates and prepares an instance of a registered type; returns
+// its handle (> 0) or an error code: AUD_ERROR_UNKNOWN_TYPE,
+// AUD_ERROR_FORMAT for channels outside the descriptor's range,
+// AUD_ERROR_CAPACITY when max_nodes is reached. The instance renders from
+// the next commit on.
+AUD_EXPORT int32_t aud_graph_create_node(AudGraph* graph, const char* type_id,
+                                         const AudNodeConfig* config);
 
-// [control] Destroys a node instance that is not part of the published
-// chain; AUD_ERROR_STATE while it is, or while the realtime thread has not
-// adopted the latest chain yet (it may still render the node).
-AUD_EXPORT int32_t aud_engine_destroy_node(AudEngine* engine, int32_t node);
+// [control] The descriptor of an instance; NULL for an unknown handle.
+AUD_EXPORT const AudNodeDescriptor* aud_graph_node_descriptor(AudGraph* graph,
+                                                              int32_t node);
 
-// [control] Publishes a serial chain of node instances as the render
-// program; the realtime thread adopts it at the next block start. Returns
-// the revision (> 0) or an error code.
-AUD_EXPORT int32_t aud_engine_set_chain(AudEngine* engine, const int32_t* nodes,
-                                        uint32_t count);
+// [control] The channels of a bus of an instance (`direction` 0 input, 1
+// output), or an error code.
+AUD_EXPORT int32_t aud_graph_node_channels(AudGraph* graph, int32_t node,
+                                           uint32_t direction, uint32_t bus);
 
-// [control, one producer] Enqueues a parameter change; AUD_ERROR_QUEUE_FULL
+// [control] The live handles in creation order; returns the number of
+// nodes and writes at most `capacity` of them.
+AUD_EXPORT int32_t aud_graph_nodes(AudGraph* graph, int32_t* handles,
+                                   uint32_t capacity);
+
+// [control] The latency of an instance in frames (its own, plus the fixed
+// block when the engine re-blocks it), or an error code.
+AUD_EXPORT int32_t aud_graph_node_latency(AudGraph* graph, int32_t node);
+
+// [control] The frames by which scheduled events of the node are
+// pre-delivered so that they are heard at their time: the path latency
+// from the node to the graph output (graph-001).
+AUD_EXPORT int32_t aud_graph_node_lead(AudGraph* graph, int32_t node);
+
+// [control] The latency of the published program from the graph inputs to
+// the graph outputs in frames.
+AUD_EXPORT int32_t aud_graph_output_latency(AudGraph* graph);
+
+// ............................................................................
+// Transactions (graph-003)
+
+// [control] Opens a transaction; AUD_ERROR_STATE while one is open.
+AUD_EXPORT int32_t aud_graph_begin(AudGraph* graph);
+
+// [control] Connects an output bus to an input bus inside the open
+// transaction; `flags` are AUD_CONNECTION_*. Channels are mapped: equal
+// counts one to one, mono is broadcast, a wider source is averaged into a
+// mono input, otherwise the first channels are mapped.
+AUD_EXPORT int32_t aud_graph_connect(AudGraph* graph, int32_t from,
+                                     uint32_t from_bus, int32_t to,
+                                     uint32_t to_bus, uint32_t flags);
+
+// [control] Removes an audio connection inside the open transaction.
+AUD_EXPORT int32_t aud_graph_disconnect(AudGraph* graph, int32_t from,
+                                        uint32_t from_bus, int32_t to,
+                                        uint32_t to_bus);
+
+// [control] Connects an event output to an event input.
+AUD_EXPORT int32_t aud_graph_connect_events(AudGraph* graph, int32_t from,
+                                            uint32_t from_port, int32_t to,
+                                            uint32_t to_port);
+
+// [control] Removes an event connection.
+AUD_EXPORT int32_t aud_graph_disconnect_events(AudGraph* graph, int32_t from,
+                                               uint32_t from_port, int32_t to,
+                                               uint32_t to_port);
+
+// [control] Removes a node inside the open transaction: its connections
+// go with it, the instance retires at the commit and is freed once its
+// fade or tail has passed (AUD_NOTIFY_NODE_DONE). A node that never
+// rendered is freed at once.
+AUD_EXPORT int32_t aud_graph_remove_node(AudGraph* graph, int32_t node);
+
+// [control] Compiles the topology and publishes the program; returns the
+// revision (> 0) or an error code, e.g. AUD_ERROR_CYCLE. On an error the
+// transaction stays open.
+AUD_EXPORT int32_t aud_graph_commit(AudGraph* graph);
+
+// [control] Discards the open transaction.
+AUD_EXPORT int32_t aud_graph_rollback(AudGraph* graph);
+
+// [control] The revision the realtime thread adopted last.
+AUD_EXPORT uint32_t aud_graph_revision(AudGraph* graph);
+
+// ............................................................................
+// Commands (interop-002)
+
+// [control, one producer] Enqueues a parameter change for the next block;
+// a node that has not rendered yet takes it at once. AUD_ERROR_QUEUE_FULL
 // when the queue is full - nothing is dropped silently.
-AUD_EXPORT int32_t aud_engine_set_param(AudEngine* engine, int32_t node,
-                                        uint32_t param, float value);
+AUD_EXPORT int32_t aud_graph_set_param(AudGraph* graph, int32_t node,
+                                       uint32_t param, float value,
+                                       uint32_t ramp_frames);
 
-// [control, one producer] Enqueues a note on (on != 0) or note off.
-AUD_EXPORT int32_t aud_engine_send_note(AudEngine* engine, int32_t node, int32_t on,
-                                        uint32_t channel, uint32_t number,
-                                        float velocity);
+// [control, one producer] Enqueues an event for `node` at `at` (NULL means
+// the next block). The event's sample offset is ignored; its port names
+// the event input. An `id` above zero lets the event be cancelled while it
+// waits. AUD_ERROR_LOOKAHEAD beyond the lookahead, AUD_ERROR_CAPACITY when
+// the scheduler is full, AUD_ERROR_STATE for a node that has not been
+// committed, AUD_ERROR_RETIRED for a removed node.
+AUD_EXPORT int32_t aud_graph_send_event(AudGraph* graph, int32_t node,
+                                        const AudEvent* event,
+                                        const AudTimestamp* at, uint32_t id);
 
-// [control] Applies a string setting to a node on the calling thread; may
-// block (loading). AUD_ERROR_STATE if the node type takes no strings.
-AUD_EXPORT int32_t aud_engine_set_string(AudEngine* engine, int32_t node,
-                                         uint32_t key, const char* value);
+// [control, one producer] Cancels waiting events: those with `id`, or all
+// of `node` when `id` is 0, or every waiting event when both are 0.
+AUD_EXPORT int32_t aud_graph_cancel(AudGraph* graph, int32_t node,
+                                    uint32_t id);
 
-// [realtime] Renders `frames` frames of interleaved output. Applies pending
-// commands first, adopts a new chain, runs the nodes, interleaves.
-AUD_EXPORT void aud_engine_render(AudEngine* engine, float* interleaved_output,
-                                  uint32_t frames);
+// [control] Applies a string setting on the calling thread; may block.
+AUD_EXPORT int32_t aud_graph_set_string(AudGraph* graph, int32_t node,
+                                        uint32_t key, const char* value);
 
-// [realtime] The render callback of aud_audio_io: `user` is the engine. The
-// signature matches AudRenderCallback of aud_abi.h.
-AUD_EXPORT void aud_engine_io_render(void* user, float* interleaved_output,
-                                     uint32_t frames, uint32_t channels);
+// [control, one producer] Enqueues a transport request; the provider
+// applies it on the realtime thread at the request's time.
+AUD_EXPORT int32_t aud_graph_transport(AudGraph* graph,
+                                       const AudTransportRequest* request);
+
+// [control] Reads the transport as the realtime thread last published it.
+AUD_EXPORT int32_t aud_graph_transport_state(AudGraph* graph,
+                                             AudGraphTransportState* state);
+
+// [control] Selects a registered transport provider by id (NULL or the
+// internal id selects the internal transport); AUD_ERROR_STATE while
+// running.
+AUD_EXPORT int32_t aud_graph_set_transport_provider(AudGraph* graph,
+                                                    const char* id);
+
+// [control] The sample position of the next block.
+AUD_EXPORT int64_t aud_graph_sample_position(AudGraph* graph);
+
+// ............................................................................
+// Rendering
+
+// [realtime] Renders one block into the host's buses: the render function
+// of plugin-002, `user` is the graph. Blocks longer than the prepared
+// maximum are refused with AUD_ERROR_INVALID_ARGUMENT and silence; a graph
+// that is not running renders silence and returns AUD_OK.
+AUD_EXPORT int32_t aud_graph_render(void* user, const AudRenderRequest* request);
+
+// [control] Renders offline on the calling thread while no stream renders;
+// the graph has to be running.
+AUD_EXPORT int32_t aud_graph_render_offline(AudGraph* graph,
+                                            const AudOfflineRequest* request);
+
+// ............................................................................
+// Notifications and taps
+
+// [control] Sets the listener the notification thread wakes; NULL removes
+// it.
+AUD_EXPORT int32_t aud_graph_set_listener(AudGraph* graph,
+                                          AudGraphListener listener,
+                                          void* user);
+
+// [control] Takes the waiting notifications, at most `capacity`, and frees
+// the instances that finished; returns the number taken.
+AUD_EXPORT int32_t aud_graph_take_notifications(AudGraph* graph,
+                                                AudGraphNotification* out,
+                                                uint32_t capacity);
+
+// [control] Copies the most recent `frames` frames of `channel` of a tap
+// node into `out`; frames the tap has not seen yet are 0.
+AUD_EXPORT int32_t aud_graph_tap_read(AudGraph* graph, int32_t node,
+                                      uint32_t channel, float* out,
+                                      uint32_t frames);
+
+// [control] The peak and root mean square of the last block a tap saw.
+AUD_EXPORT int32_t aud_graph_tap_meter(AudGraph* graph, int32_t node,
+                                       uint32_t channel, float* peak,
+                                       float* rms);
 
 // [control] Copies the counters.
-AUD_EXPORT void aud_engine_get_stats(AudEngine* engine, AudEngineStats* stats);
+AUD_EXPORT int32_t aud_graph_get_stats(AudGraph* graph, AudGraphStats* stats);
 
 // [control] Zeroes the counters; the realtime thread keeps counting.
-AUD_EXPORT void aud_engine_reset_stats(AudEngine* engine);
+AUD_EXPORT void aud_graph_reset_stats(AudGraph* graph);
 
 #ifdef __cplusplus
 }

@@ -1,7 +1,8 @@
 # Run with `dart run ffigen --config ffigen.yaml`.
 name: AudAudioGraphBindings
 description: |
-  Bindings for `src/aud_audio_graph.h`.
+  Bindings for `src/aud_audio_graph.h`. The structs of the ABI come from the
+  bindings of aud_audio_core, so a host builds one `AudEvent` for both.
 
   Regenerate bindings with `dart run ffigen --config ffigen.yaml`.
 output: 'lib/src/aud_audio_graph_bindings_generated.dart'
@@ -13,6 +14,38 @@ headers:
 compiler-opts:
   - '-I../aud_audio_core/src'
 ffi-native:
+library-imports:
+  core: 'package:aud_audio_core/aud_audio_core_bindings.dart'
+type-map:
+  structs:
+    AudEvent:
+      lib: core
+      c-type: AudEvent
+      dart-type: AudEvent
+    AudTimestamp:
+      lib: core
+      c-type: AudTimestamp
+      dart-type: AudTimestamp
+    AudHostApi:
+      lib: core
+      c-type: AudHostApi
+      dart-type: AudHostApi
+    AudNodeDescriptor:
+      lib: core
+      c-type: AudNodeDescriptor
+      dart-type: AudNodeDescriptor
+    AudRenderRequest:
+      lib: core
+      c-type: AudRenderRequest
+      dart-type: AudRenderRequest
+    AudTransportRequest:
+      lib: core
+      c-type: AudTransportRequest
+      dart-type: AudTransportRequest
+    AudAudioBus:
+      lib: core
+      c-type: AudAudioBus
+      dart-type: AudAudioBus
 preamble: |
   // @license
   // Copyright (c) Audanika. All Rights Reserved.

@@ -10,21 +10,19 @@ packages:
     source: hosted
     version: "2.13.1"
   aud_audio_core:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
-      path: "."
-      resolved-ref: "47e125c46f7c786a55bf00ddfd75c073ee56c70a"
-      tag-pattern: "{{version}}"
-      url: "git@github.com:audaudio/aud_audio_core.git"
-    source: git
-    version: "0.1.0"
+      path: "../../aud_audio_core"
+      relative: true
+    source: path
+    version: "0.3.0"
   aud_audio_graph:
     dependency: "direct main"
     description:
       path: ".."
       relative: true
     source: path
-    version: "0.0.2"
+    version: "0.2.0"
   aud_midi_standard:
     dependency: transitive
     description:

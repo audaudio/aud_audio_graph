@@ -12,7 +12,7 @@ import 'package:hooks/hooks.dart';
 import 'package:logging/logging.dart';
 import 'package:native_toolchain_c/native_toolchain_c.dart';
 
-// Builds the spike engine as C++17 against the header-only ABI of
+// Builds the graph engine as C++17 against the header-only ABI of
 // aud_audio_core, whose `src` directory is resolved through the package
 // config - packages never link the core, they only include it.
 void main(List<String> args) async {
@@ -23,7 +23,13 @@ void main(List<String> args) async {
     final cbuilder = CBuilder.library(
       name: packageName,
       assetName: 'src/${packageName}_bindings_generated.dart',
-      sources: ['src/aud_engine.cpp', 'src/aud_ref_nodes.cpp'],
+      sources: [
+        'src/aud_graph.cpp',
+        'src/aud_graph_compiler.cpp',
+        'src/aud_graph_nodes.cpp',
+        'src/aud_graph_offline.cpp',
+        'src/aud_graph_render.cpp',
+      ],
       includes: ['src', await packageSrcDirectory('aud_audio_core')],
       language: Language.cpp,
       std: 'c++17',
