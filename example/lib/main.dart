@@ -1,72 +1,57 @@
+// @license
+// Copyright (c) Audanika. All Rights Reserved.
+//
+// Use of this source code is governed by terms that can be
+// found in the LICENSE file in the root of this package.
+
+import 'package:aud_audio_graph/aud_audio_graph.dart';
 import 'package:flutter/material.dart';
 
-import 'dart:async';
-
-import 'package:aud_audio_graph/aud_audio_graph.dart' as aud_audio_graph;
-
 void main() {
-  runApp(const MyApp());
+  runApp(const AudGraphExampleApp());
 }
 
-class MyApp extends StatefulWidget {
-  const MyApp({super.key});
+/// Lists the node types of a spike engine and renders one block offline.
+class AudGraphExampleApp extends StatefulWidget {
+  /// Creates the example app.
+  const AudGraphExampleApp({super.key});
 
   @override
-  State<MyApp> createState() => _MyAppState();
+  State<AudGraphExampleApp> createState() => _AudGraphExampleAppState();
 }
 
-class _MyAppState extends State<MyApp> {
-  late int sumResult;
-  late Future<int> sumAsyncResult;
+class _AudGraphExampleAppState extends State<AudGraphExampleApp> {
+  final AudEngine _engine = AudEngine();
+  late final List<AudNodeTypeInfo> _types = _engine.nodeTypes;
+  late final double _peak = _renderPeak();
+
+  double _renderPeak() {
+    final sine = _engine.createNode('aud.ref.sine');
+    _engine.setChain([sine]);
+    return _engine.render(_engine.maxFrames).reduce((a, b) => a > b ? a : b);
+  }
 
   @override
-  void initState() {
-    super.initState();
-    sumResult = aud_audio_graph.sum(1, 2);
-    sumAsyncResult = aud_audio_graph.sumAsync(3, 4);
+  void dispose() {
+    _engine.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    const textStyle = TextStyle(fontSize: 25);
-    const spacerSmall = SizedBox(height: 10);
     return MaterialApp(
       home: Scaffold(
-        appBar: AppBar(title: const Text('Native Packages')),
-        body: SingleChildScrollView(
-          child: Container(
-            padding: const .all(10),
-            child: Column(
-              children: [
-                const Text(
-                  'This calls a native function through FFI that is shipped as source in the package. '
-                  'The native code is built as part of the Flutter Runner build.',
-                  style: textStyle,
-                  textAlign: .center,
-                ),
-                spacerSmall,
-                Text(
-                  'sum(1, 2) = $sumResult',
-                  style: textStyle,
-                  textAlign: .center,
-                ),
-                spacerSmall,
-                FutureBuilder<int>(
-                  future: sumAsyncResult,
-                  builder: (BuildContext context, AsyncSnapshot<int> value) {
-                    final displayValue = (value.hasData)
-                        ? value.data
-                        : 'loading';
-                    return Text(
-                      'await sumAsync(3, 4) = $displayValue',
-                      style: textStyle,
-                      textAlign: .center,
-                    );
-                  },
-                ),
-              ],
-            ),
-          ),
+        appBar: AppBar(title: const Text('aud_audio_graph')),
+        body: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            for (final type in _types)
+              ListTile(
+                title: Text(type.id),
+                subtitle: Text(type.params.map((p) => p.id).join(', ')),
+              ),
+            Text('Peak of one rendered block: ${_peak.toStringAsFixed(3)}'),
+          ],
         ),
       ),
     );

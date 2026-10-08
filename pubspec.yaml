@@ -9,6 +9,7 @@ environment:
   sdk: ^3.12.2
 
 dependencies:
+  ffi: ^2.2.0
   aud_audio_core:
     git:
       url: git@github.com:audaudio/aud_audio_core.git
@@ -21,7 +22,6 @@ dependencies:
 
 dev_dependencies:
   dna_audanika: ^0.0.2
-  ffi: ^2.2.0
   ffigen: ^23.0.0
   flutter_lints: ^6.0.0
   helix: ^1.11.0
