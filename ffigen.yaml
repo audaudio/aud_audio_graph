@@ -1,0 +1,16 @@
+# Run with `dart run ffigen --config ffigen.yaml`.
+name: AudAudioGraphBindings
+description: |
+  Bindings for `src/aud_audio_graph.h`.
+
+  Regenerate bindings with `dart run ffigen --config ffigen.yaml`.
+output: 'lib/aud_audio_graph_bindings_generated.dart'
+headers:
+  entry-points:
+    - 'src/aud_audio_graph.h'
+  include-directives:
+    - 'src/aud_audio_graph.h'
+ffi-native:
+comments:
+  style: any
+  length: full
