@@ -1,6 +1,6 @@
 # aud_audio_graph
 
-Audio graph engine of the Audanika Audio Engine: C++ render programs with persistent node instances, transactions, realtime queues, scheduler, transport, offline renderer; Dart graph API and graph document.
+Audio graph engine of the Audanika Audio Engine: C++ render programs with persistent node instances, transactions, realtime queues, scheduler, transport, offline renderer, headless host; Dart graph API and graph document.
 
 Part of the Audanika Audio Engine; planned in [aud_audio_pm](https://github.com/audaudio/aud_audio_pm).
 
@@ -37,8 +37,68 @@ The engine behind `src/aud_audio_graph.h`, built on the contracts of
   `aud.graph.filter`, `aud.graph.feedback` and `aud.graph.tap`;
   `aud.core.gain` of the core is registered by the Dart side.
 
-The headless host, the stress tests and the debug watchdog follow in
-ticket 20.
+## The headless host (ticket 20)
+
+The C API `aud_host_*` runs a graph without Dart, as the plugin shells do
+(plugin-002):
+
+- `aud_host_load` validates a whole graph document - types, ids, buses,
+  parameters, string keys, state versions, assets on disk, parameter ids -
+  and only then creates the nodes, applies their presets and connects
+  them in one transaction; a refused document changes nothing.
+- Presets apply in the order strings, state blob, parameters; the host
+  keeps every parameter value. `aud_host_save` writes the document back
+  with the current parameters, strings and state blobs.
+- Assets: the document's `assets` table maps ids to paths, a string
+  `asset:<id>` reaches the node as the resolved path;
+  `aud_host_set_asset_path` relinks.
+- Stable parameter ids: FNV-1a over `<node id>/<parameter id>` with the
+  top bit cleared; colliding documents are refused.
+- `aud_host_latency` and `aud_host_tail` (`aud_graph_output_tail`);
+  `aud_host_render` and `aud_graph_render_host` hand the events the graph
+  sends to its event input to the host and take a freewheel flag.
+- `aud_graph_node_save_state` and `aud_graph_node_load_state` park a node
+  of a running graph for the call.
+
+Dart wraps it as `AudHost`; `AudGraph` has `saveState`, `loadState`,
+`addAsset`, `assetPath`, `outputTail` and writes the state blobs into
+its documents:
+
+```dart
+final host = AudHost(graph, baseDirectory: presetFolder);
+host.loadDocument(document);                            // validated, then one transaction
+final cutoff = AudHost.paramIdOf('filter', 'cutoff');   // stable across versions
+host.setParam(cutoff, 1200);
+final state = host.save();                              // the whole state as JSON
+final info = AudHost.inspect(state);                    // buses and counts, no graph
+
+graph.addAsset(const AudGraphAsset(id: 'piano', path: 'piano.sfz'),
+    baseDirectory: presetFolder);                       // strings name it asset:piano
+final blob = graph.saveState(gainNode);                 // parks a running node
+graph.loadState(gainNode, blob);
+print(graph.outputTail);                                // AudGraph.infiniteTail if endless
+```
+
+## The realtime contract under test
+
+The native tests in `test/native` run under the address and undefined
+behaviour sanitizers, under Clang's RealtimeSanitizer when a compiler on
+the machine has it (LLVM from Homebrew on macOS; a probe proves the run
+catches an allocation on the audio thread) and under the thread
+sanitizer. Stress tests cover queue overflow, late events, a transaction
+in front of every block with a click detector, route changes while notes
+play, a full scheduler and note tracker, and a stream rendering on its own
+thread. The debug watchdog counts allocations, frees and log calls on the
+audio thread - in an app those of the graph's own library and every call of
+the host api; `AudGraph.watchdogEnabled` and `watchdogViolations` read
+it. It is on in the native tests and in an app that sets
+
+```yaml
+hooks:
+  user_defines:
+    aud_audio_graph:
+      watchdog: true
+```
 
 ## Dart API
 
@@ -75,9 +135,10 @@ calls `aud_graph_render` with `graph.pointer` as the user pointer.
 ## Tests
 
 `dart test` covers the Dart side and runs `scripts/test-native.js`, which
-builds the native tests of `test/native` with the address and undefined
-behaviour sanitizers (`--no-sanitize` on a toolchain without them). The
-golden render in `test/goldens` is updated with `UPDATE_GOLDENS=1`.
+builds and runs the native tests of `test/native` under every sanitizer
+the machine has (`--no-sanitize`, `--no-rtsan`, `--no-tsan` and
+`--rtsan` select). The golden render in `test/goldens` is updated with
+`UPDATE_GOLDENS=1`.
 
 The C API is in `src/aud_audio_graph.h`; regenerate the bindings with
 `dart run ffigen --config ffigen.yaml`.

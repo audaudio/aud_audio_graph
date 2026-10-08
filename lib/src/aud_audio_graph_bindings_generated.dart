@@ -188,6 +188,52 @@ external int aud_graph_node_latency(ffi.Pointer<AudGraph> graph, int node);
 @ffi.Native<ffi.Int32 Function(ffi.Pointer<AudGraph>, ffi.Int32)>()
 external int aud_graph_node_lead(ffi.Pointer<AudGraph> graph, int node);
 
+/// [control] Restores a state blob saved by `version` of the node's state
+/// format, parked like aud_graph_node_save_state; AUD_ERROR_STATE_VERSION
+/// when the node cannot read it.
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<AudGraph>,
+    ffi.Int32,
+    ffi.Pointer<ffi.Void>,
+    ffi.Size,
+    ffi.Uint32,
+  )
+>()
+external int aud_graph_node_load_state(
+  ffi.Pointer<AudGraph> graph,
+  int node,
+  ffi.Pointer<ffi.Void> data,
+  int size,
+  int version,
+);
+
+/// [control] Writes the state of an instance with AUD_NODE_CAP_STATE into
+/// `buffer` and its size into `size`; AUD_ERROR_BUFFER_TOO_SMALL with the
+/// needed size when `capacity` is too small (`capacity` 0 asks for the
+/// size), AUD_ERROR_UNSUPPORTED for a node without state. The ABI tags
+/// save_state as [offline]: while the graph runs, the node is parked for
+/// the call so that no realtime call of it overlaps - a block rendered
+/// meanwhile skips its process call and clears its outputs; its parameter
+/// changes, events and transport resets wait for its next block. Not
+/// running, the call goes straight through.
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<AudGraph>,
+    ffi.Int32,
+    ffi.Pointer<ffi.Void>,
+    ffi.Size,
+    ffi.Pointer<ffi.Size>,
+  )
+>()
+external int aud_graph_node_save_state(
+  ffi.Pointer<AudGraph> graph,
+  int node,
+  ffi.Pointer<ffi.Void> buffer,
+  int capacity,
+  ffi.Pointer<ffi.Size> size,
+);
+
 @ffi.Native<
   ffi.Pointer<core.AudNodeDescriptor> Function(ffi.Pointer<AudGraph>, ffi.Int32)
 >()
@@ -227,6 +273,13 @@ external int aud_graph_num_node_types(ffi.Pointer<AudGraph> graph);
 @ffi.Native<ffi.Int32 Function(ffi.Pointer<AudGraph>)>()
 external int aud_graph_output_latency(ffi.Pointer<AudGraph> graph);
 
+/// [control] The tail of the published program in frames: the longest
+/// node tail plus the path latency from that node to the graph outputs,
+/// AUD_TAIL_INFINITE when a contributing node reports an infinite tail.
+/// Retired nodes still rendering their tails count until they finish.
+@ffi.Native<ffi.Uint32 Function(ffi.Pointer<AudGraph>)>()
+external int aud_graph_output_tail(ffi.Pointer<AudGraph> graph);
+
 /// [control] Prepares every instance for a sample rate and a largest block
 /// (0 keeps the current value), resets the time filter and the transport
 /// snapshot and recompiles the program; AUD_ERROR_STATE while running.
@@ -254,6 +307,18 @@ external int aud_graph_remove_node(ffi.Pointer<AudGraph> graph, int node);
 external int aud_graph_render(
   ffi.Pointer<ffi.Void> user,
   ffi.Pointer<core.AudRenderRequest> request,
+);
+
+/// [realtime] Renders one block like aud_graph_render and hands the events
+/// that reached the graph's event input to the host: the render call of
+/// the plugin shells (plugin-002). `num_output_events` and
+/// `dropped_output_events` are written before the call returns.
+@ffi.Native<
+  ffi.Int32 Function(ffi.Pointer<AudGraph>, ffi.Pointer<AudHostRenderRequest>)
+>()
+external int aud_graph_render_host(
+  ffi.Pointer<AudGraph> graph,
+  ffi.Pointer<AudHostRenderRequest> request,
 );
 
 /// [control] Renders offline on the calling thread while no stream renders;
@@ -294,7 +359,9 @@ external double aud_graph_sample_rate(ffi.Pointer<AudGraph> graph);
 /// the next block). The event's sample offset is ignored; its port names
 /// the event input. An `id` above zero lets the event be cancelled while it
 /// waits. AUD_ERROR_LOOKAHEAD beyond the lookahead, AUD_ERROR_CAPACITY when
-/// the scheduler is full, AUD_ERROR_STATE for a node that has not been
+/// the scheduler is full - an event with a time holds its place from the
+/// enqueue until it leaves the scheduler, so a burst within one block
+/// cannot overrun it -, AUD_ERROR_STATE for a node that has not been
 /// committed, AUD_ERROR_RETIRED for a removed node.
 @ffi.Native<
   ffi.Int32 Function(
@@ -465,6 +532,266 @@ external int aud_graph_transport_state(
   ffi.Pointer<AudGraphTransportState> state,
 );
 
+/// Whether the watchdog is compiled in.
+@ffi.Native<ffi.Int32 Function()>()
+external int aud_graph_watchdog_enabled();
+
+/// [any thread] Zeroes the process-wide count.
+@ffi.Native<ffi.Void Function()>()
+external void aud_graph_watchdog_reset();
+
+/// [any thread] The violations every graph of the process counted since
+/// the last reset; 0 without the watchdog.
+@ffi.Native<ffi.Uint64 Function()>()
+external int aud_graph_watchdog_violations();
+
+/// [control] Applies a node preset (JSON of aud_node_preset.schema.json) to
+/// the node `node_id`: the strings on the calling thread, the state blob
+/// through the node park, the parameters through the queue. A preset the
+/// validation refuses changes nothing; a part the node or a full queue
+/// refuses while it is applied stops it there - the parts before stay, and
+/// the host's table holds what the node has.
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<AudHost>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Size,
+  )
+>()
+external int aud_host_apply_preset(
+  ffi.Pointer<AudHost> host,
+  ffi.Pointer<ffi.Char> node_id,
+  ffi.Pointer<ffi.Char> json,
+  int length,
+);
+
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<AudHost>,
+    ffi.Uint32,
+    ffi.Pointer<AudHostAsset>,
+  )
+>()
+external int aud_host_asset(
+  ffi.Pointer<AudHost> host,
+  int index,
+  ffi.Pointer<AudHostAsset> out,
+);
+
+/// [control] Creates a host over a graph; the host never destroys the
+/// graph. NULL for an invalid argument.
+@ffi.Native<
+  ffi.Pointer<AudHost> Function(
+    ffi.Pointer<AudGraph>,
+    ffi.Pointer<AudHostOptions>,
+  )
+>()
+external ffi.Pointer<AudHost> aud_host_create(
+  ffi.Pointer<AudGraph> graph,
+  ffi.Pointer<AudHostOptions> options,
+);
+
+/// [control] Destroys the host; the graph and its nodes stay.
+@ffi.Native<ffi.Void Function(ffi.Pointer<AudHost>)>()
+external void aud_host_destroy(ffi.Pointer<AudHost> host);
+
+/// [control] The current value of a parameter by its stable id.
+@ffi.Native<
+  ffi.Int32 Function(ffi.Pointer<AudHost>, ffi.Uint32, ffi.Pointer<ffi.Float>)
+>()
+external int aud_host_get_param(
+  ffi.Pointer<AudHost> host,
+  int id,
+  ffi.Pointer<ffi.Float> value,
+);
+
+/// [control] The graph of the host.
+@ffi.Native<ffi.Pointer<AudGraph> Function(ffi.Pointer<AudHost>)>()
+external ffi.Pointer<AudGraph> aud_host_graph(ffi.Pointer<AudHost> host);
+
+/// [control] Reads the buses, the counts and the name of a document text
+/// without a graph; AUD_ERROR_INVALID_ARGUMENT for text that is no
+/// document, AUD_ERROR_CAPACITY for more buses than the info holds.
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<ffi.Char>,
+    ffi.Size,
+    ffi.Pointer<AudHostDocumentInfo>,
+  )
+>()
+external int aud_host_inspect(
+  ffi.Pointer<ffi.Char> json,
+  int length,
+  ffi.Pointer<AudHostDocumentInfo> info,
+);
+
+/// [control] What the last failed call of the host complained about, or an
+/// empty string; valid until the next call.
+@ffi.Native<ffi.Pointer<ffi.Char> Function(ffi.Pointer<AudHost>)>()
+external ffi.Pointer<ffi.Char> aud_host_last_error(ffi.Pointer<AudHost> host);
+
+/// [control] The latency and the tail of the published program:
+/// aud_graph_output_latency and aud_graph_output_tail.
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<AudHost>)>()
+external int aud_host_latency(ffi.Pointer<AudHost> host);
+
+/// [control] Loads a document: validates all of it - the schema, the types
+/// registered with the graph, the ids, the buses against the graph's, the
+/// parameters and string keys, the state versions, the assets on disk, the
+/// parameter ids - and only then creates the nodes, applies their presets
+/// and connects them in one transaction while the nodes of the previous
+/// document retire. On an error nothing of the document is applied; the
+/// error code names the first problem and aud_host_last_error says which.
+/// The transport settings are sent after the commit: AUD_ERROR_QUEUE_FULL
+/// then means the document is loaded but the event queue refused them.
+@ffi.Native<
+  ffi.Int32 Function(ffi.Pointer<AudHost>, ffi.Pointer<ffi.Char>, ffi.Size)
+>()
+external int aud_host_load(
+  ffi.Pointer<AudHost> host,
+  ffi.Pointer<ffi.Char> json,
+  int length,
+);
+
+/// [control] The handle of the node `id` of the loaded document, or
+/// AUD_ERROR_NOT_FOUND.
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<AudHost>, ffi.Pointer<ffi.Char>)>()
+external int aud_host_node(ffi.Pointer<AudHost> host, ffi.Pointer<ffi.Char> id);
+
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<AudHost>, ffi.Uint32)>()
+external int aud_host_node_at(ffi.Pointer<AudHost> host, int index);
+
+/// [control] The document id of a node handle; NULL for a handle the
+/// document does not know.
+@ffi.Native<ffi.Pointer<ffi.Char> Function(ffi.Pointer<AudHost>, ffi.Int32)>()
+external ffi.Pointer<ffi.Char> aud_host_node_id(
+  ffi.Pointer<AudHost> host,
+  int node,
+);
+
+/// [control] Writes the preset of the node `node_id` with its current
+/// parameters, strings and state as JSON text, like aud_host_save.
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<AudHost>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Size,
+    ffi.Pointer<ffi.Size>,
+  )
+>()
+external int aud_host_node_preset(
+  ffi.Pointer<AudHost> host,
+  ffi.Pointer<ffi.Char> node_id,
+  ffi.Pointer<ffi.Char> buffer,
+  int capacity,
+  ffi.Pointer<ffi.Size> size,
+);
+
+/// [control] The assets of the loaded document.
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<AudHost>)>()
+external int aud_host_num_assets(ffi.Pointer<AudHost> host);
+
+/// [control] The nodes of the loaded document, and the handle of the node at
+/// `index` in document order (AUD_ERROR_NOT_FOUND beyond them).
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<AudHost>)>()
+external int aud_host_num_nodes(ffi.Pointer<AudHost> host);
+
+/// [control] The parameters of the loaded document, ordered by id.
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<AudHost>)>()
+external int aud_host_num_params(ffi.Pointer<AudHost> host);
+
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<AudHost>,
+    ffi.Uint32,
+    ffi.Pointer<AudHostParam>,
+  )
+>()
+external int aud_host_param(
+  ffi.Pointer<AudHost> host,
+  int index,
+  ffi.Pointer<AudHostParam> out,
+);
+
+/// [any thread] The stable id of a parameter: FNV-1a over the node id, a
+/// slash and the parameter id, the top bit cleared; 0 for a NULL argument.
+@ffi.Native<ffi.Uint32 Function(ffi.Pointer<ffi.Char>, ffi.Pointer<ffi.Char>)>()
+external int aud_host_param_id(
+  ffi.Pointer<ffi.Char> node_id,
+  ffi.Pointer<ffi.Char> param_id,
+);
+
+/// [control] The index of the parameter with the stable `id`, or
+/// AUD_ERROR_NOT_FOUND.
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<AudHost>, ffi.Uint32)>()
+external int aud_host_param_index(ffi.Pointer<AudHost> host, int id);
+
+/// [realtime] Renders one block: aud_graph_render_host on the host's graph.
+@ffi.Native<
+  ffi.Int32 Function(ffi.Pointer<AudHost>, ffi.Pointer<AudHostRenderRequest>)
+>()
+external int aud_host_render(
+  ffi.Pointer<AudHost> host,
+  ffi.Pointer<AudHostRenderRequest> request,
+);
+
+/// [control] Writes the loaded document with the current state - the
+/// parameters, the string settings, the state blobs of the nodes and the
+/// asset table - as JSON text into `buffer` and its length into `size`;
+/// AUD_ERROR_BUFFER_TOO_SMALL with the needed length when `capacity` is
+/// smaller than the length plus the terminator. The connections are those
+/// of the loaded document; edits made on the graph directly are not part
+/// of it.
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<AudHost>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Size,
+    ffi.Pointer<ffi.Size>,
+  )
+>()
+external int aud_host_save(
+  ffi.Pointer<AudHost> host,
+  ffi.Pointer<ffi.Char> buffer,
+  int capacity,
+  ffi.Pointer<ffi.Size> size,
+);
+
+/// [control] Relinks an asset: the new path is resolved and checked, every
+/// string setting that names the asset is applied again, and the saved
+/// document carries the new path (relative to the base directory when it
+/// lies inside it).
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<AudHost>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+  )
+>()
+external int aud_host_set_asset_path(
+  ffi.Pointer<AudHost> host,
+  ffi.Pointer<ffi.Char> id,
+  ffi.Pointer<ffi.Char> path,
+);
+
+/// [control, one producer] Sets a parameter by its stable id like
+/// aud_graph_set_param; AUD_ERROR_INVALID_ARGUMENT for a value outside the
+/// parameter's range, which no document could load again.
+@ffi.Native<
+  ffi.Int32 Function(ffi.Pointer<AudHost>, ffi.Uint32, ffi.Float, ffi.Uint32)
+>()
+external int aud_host_set_param(
+  ffi.Pointer<AudHost> host,
+  int id,
+  double value,
+  int ramp_frames,
+);
+
+@ffi.Native<ffi.Uint32 Function(ffi.Pointer<AudHost>)>()
+external int aud_host_tail(ffi.Pointer<AudHost> host);
+
 const int AUD_CONNECTION_LOW_LATENCY = 1;
 
 const int AUD_FILTER_PARAM_CUTOFF = 0;
@@ -478,6 +805,8 @@ const int AUD_GRAPH_CREATED = 0;
 const int AUD_GRAPH_DISPOSED = 5;
 
 const int AUD_GRAPH_DROP_LATE_EVENTS = 1;
+
+const int AUD_GRAPH_ERROR_REALTIME_VIOLATION = -100;
 
 const String AUD_GRAPH_FEEDBACK_TYPE_ID = 'aud.graph.feedback';
 
@@ -500,6 +829,20 @@ const int AUD_GRAPH_STOPPED = 4;
 const int AUD_GRAPH_SUSPENDED = 3;
 
 const String AUD_GRAPH_TAP_TYPE_ID = 'aud.graph.tap';
+
+const int AUD_GRAPH_VIOLATION_ALLOC = 4;
+
+const int AUD_GRAPH_VIOLATION_DELETE = 2;
+
+const int AUD_GRAPH_VIOLATION_FREE = 8;
+
+const int AUD_GRAPH_VIOLATION_LOG = 16;
+
+const int AUD_GRAPH_VIOLATION_NEW = 1;
+
+const int AUD_HOST_MAX_BUSES = 16;
+
+const int AUD_HOST_MAX_NAME = 128;
 
 const int AUD_MIXER_NUM_INPUTS = 8;
 
@@ -763,6 +1106,13 @@ final class AudGraphStats extends ffi.Struct {
   @ffi.Float()
   external double output_peak;
 
+  @ffi.Uint32()
+  external int reserved2;
+
+  /// what the watchdog caught since the reset
+  @ffi.Uint64()
+  external int realtime_violations;
+
   static ffi.Pointer<AudGraphStats> $allocate(
     ffi.Allocator $allocator, {
     required int struct_size,
@@ -783,6 +1133,8 @@ final class AudGraphStats extends ffi.Struct {
     required int time_filter_resets,
     required int reserved,
     required double output_peak,
+    required int reserved2,
+    required int realtime_violations,
   }) => $allocator<AudGraphStats>()
     ..ref.struct_size = struct_size
     ..ref.state = state
@@ -801,7 +1153,9 @@ final class AudGraphStats extends ffi.Struct {
     ..ref.overloads = overloads
     ..ref.time_filter_resets = time_filter_resets
     ..ref.reserved = reserved
-    ..ref.output_peak = output_peak;
+    ..ref.output_peak = output_peak
+    ..ref.reserved2 = reserved2
+    ..ref.realtime_violations = realtime_violations;
 }
 
 /// The transport as the realtime thread last saw it.
@@ -860,6 +1214,228 @@ final class AudGraphTransportState extends ffi.Struct {
     ..ref.reserved = reserved
     ..ref.loop_start = loop_start
     ..ref.loop_end = loop_end;
+}
+
+/// ............................................................................
+/// The headless host (plugin-002, ticket 20)
+///
+/// A host over a graph that works without Dart: it loads a graph document
+/// (doc/schemas/aud_graph_document.schema.json with the node presets of
+/// aud_node_preset.schema.json of the core) in one transaction, applies the
+/// presets, resolves the assets the document references, saves the whole
+/// state back as a document and gives the plugin shells what they need:
+/// stable parameter ids, latency, tail and the events of the graph per
+/// block. Every function is [control] except aud_host_render. A failed call
+/// leaves a message in aud_host_last_error.
+///
+/// Presets apply in the order strings, state, parameters: the strings load
+/// what a node needs, the state blob restores what parameters cannot hold,
+/// the parameters come last. The host keeps the value of every parameter -
+/// the engine has none to report - and assumes the descriptor's default for
+/// one that no preset names; a saved document names them all. A node whose
+/// state blob holds parameter values therefore has them overridden by the
+/// parameters of the preset.
+///
+/// Assets: the document's `assets` table maps an id to a path; a string
+/// setting whose value is `asset:<id>` names one. The host resolves the
+/// path against its base directory, checks that the file exists before
+/// anything is applied and hands the resolved path to the node's
+/// set_string, which loads the file.
+///
+/// Parameter ids: FNV-1a over `<node id>/<parameter id>` with the top bit
+/// cleared - 31 bits, as VST3 hosts expect (JUCE clears the same bit), and
+/// never the invalid id 0xFFFFFFFF of VST3 and CLAP. A document whose ids
+/// collide is refused.
+final class AudHost extends ffi.Opaque {}
+
+/// One asset of the loaded document. The strings stay valid until the next
+/// load or aud_host_set_asset_path.
+final class AudHostAsset extends ffi.Struct {
+  @ffi.Uint32()
+  external int struct_size;
+
+  /// whether the file was found at the last check
+  @ffi.Uint32()
+  external int exists;
+
+  external ffi.Pointer<ffi.Char> id;
+
+  /// as the document names it
+  external ffi.Pointer<ffi.Char> path;
+
+  /// what the nodes receive
+  external ffi.Pointer<ffi.Char> resolved;
+
+  static ffi.Pointer<AudHostAsset> $allocate(
+    ffi.Allocator $allocator, {
+    required int struct_size,
+    required int exists,
+    required ffi.Pointer<ffi.Char> id,
+    required ffi.Pointer<ffi.Char> path,
+    required ffi.Pointer<ffi.Char> resolved,
+  }) => $allocator<AudHostAsset>()
+    ..ref.struct_size = struct_size
+    ..ref.exists = exists
+    ..ref.id = id
+    ..ref.path = path
+    ..ref.resolved = resolved;
+}
+
+/// What aud_host_inspect reads from a document without a graph: its buses,
+/// so that a shell can create the graph that fits, and its counts.
+final class AudHostDocumentInfo extends ffi.Struct {
+  @ffi.Uint32()
+  external int struct_size;
+
+  @ffi.Uint32()
+  external int schema;
+
+  @ffi.Uint32()
+  external int num_input_buses;
+
+  @ffi.Uint32()
+  external int num_output_buses;
+
+  @ffi.Array.multi([16])
+  external ffi.Array<ffi.Uint32> input_channels;
+
+  @ffi.Array.multi([16])
+  external ffi.Array<ffi.Uint32> output_channels;
+
+  @ffi.Uint32()
+  external int num_nodes;
+
+  @ffi.Uint32()
+  external int num_assets;
+
+  @ffi.Array.multi([128])
+  external ffi.Array<ffi.Char> name;
+}
+
+/// How a host is created. NULL or zero means the default.
+final class AudHostOptions extends ffi.Struct {
+  @ffi.Uint32()
+  external int struct_size;
+
+  /// Relative asset paths resolve against it; NULL leaves them relative to
+  /// the working directory.
+  external ffi.Pointer<ffi.Char> base_directory;
+
+  static ffi.Pointer<AudHostOptions> $allocate(
+    ffi.Allocator $allocator, {
+    required int struct_size,
+    required ffi.Pointer<ffi.Char> base_directory,
+  }) => $allocator<AudHostOptions>()
+    ..ref.struct_size = struct_size
+    ..ref.base_directory = base_directory;
+}
+
+/// One parameter of the loaded document. The strings stay valid until the
+/// next load.
+final class AudHostParam extends ffi.Struct {
+  @ffi.Uint32()
+  external int struct_size;
+
+  /// the stable id
+  @ffi.Uint32()
+  external int id;
+
+  /// the node handle
+  @ffi.Int32()
+  external int node;
+
+  /// the index in the node's descriptor
+  @ffi.Uint32()
+  external int index;
+
+  external ffi.Pointer<ffi.Char> node_id;
+
+  external ffi.Pointer<ffi.Char> param_id;
+
+  external ffi.Pointer<core.AudParamDescriptor> descriptor;
+
+  /// the current value as the host set it
+  @ffi.Float()
+  external double value;
+
+  static ffi.Pointer<AudHostParam> $allocate(
+    ffi.Allocator $allocator, {
+    required int struct_size,
+    required int id,
+    required int node,
+    required int index,
+    required ffi.Pointer<ffi.Char> node_id,
+    required ffi.Pointer<ffi.Char> param_id,
+    required ffi.Pointer<core.AudParamDescriptor> descriptor,
+    required double value,
+  }) => $allocator<AudHostParam>()
+    ..ref.struct_size = struct_size
+    ..ref.id = id
+    ..ref.node = node
+    ..ref.index = index
+    ..ref.node_id = node_id
+    ..ref.param_id = param_id
+    ..ref.descriptor = descriptor
+    ..ref.value = value;
+}
+
+/// What a host that wants the graph's events hands to one render call
+/// (plugin-002, ticket 20): the render request of the ABI and a buffer the
+/// engine fills with the events that reached the graph's event input in the
+/// block - node 0's input 0, where event connections "to the graph" end -
+/// in ascending sample offset. A host that renders through
+/// aud_graph_render_host takes these events; rendered through
+/// aud_graph_render they reach the control thread as AUD_NOTIFY_EVENT.
+/// With AUD_PROCESS_OFFLINE in `flags` the block renders freewheeling: the
+/// nodes see the flag and no overload is reported.
+final class AudHostRenderRequest extends ffi.Struct {
+  @ffi.Uint32()
+  external int struct_size;
+
+  /// AUD_PROCESS_*
+  @ffi.Uint32()
+  external int flags;
+
+  /// the buses, time, events and transport
+  external ffi.Pointer<core.AudRenderRequest> request;
+
+  /// written by the engine
+  external ffi.Pointer<core.AudEvent> output_events;
+
+  /// 0: the events stay notifications
+  @ffi.Uint32()
+  external int max_output_events;
+
+  /// written by the engine
+  @ffi.Uint32()
+  external int num_output_events;
+
+  /// did not fit; also a diagnostic
+  @ffi.Uint32()
+  external int dropped_output_events;
+
+  @ffi.Uint32()
+  external int reserved;
+
+  static ffi.Pointer<AudHostRenderRequest> $allocate(
+    ffi.Allocator $allocator, {
+    required int struct_size,
+    required int flags,
+    required ffi.Pointer<core.AudRenderRequest> request,
+    required ffi.Pointer<core.AudEvent> output_events,
+    required int max_output_events,
+    required int num_output_events,
+    required int dropped_output_events,
+    required int reserved,
+  }) => $allocator<AudHostRenderRequest>()
+    ..ref.struct_size = struct_size
+    ..ref.flags = flags
+    ..ref.request = request
+    ..ref.output_events = output_events
+    ..ref.max_output_events = max_output_events
+    ..ref.num_output_events = num_output_events
+    ..ref.dropped_output_events = dropped_output_events
+    ..ref.reserved = reserved;
 }
 
 /// How a node instance is created: its bus formats. NULL or zero bus counts

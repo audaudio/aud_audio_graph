@@ -16,6 +16,7 @@ void main() {
     name: 'Demo',
     inputChannels: [1],
     outputChannels: [2],
+    assets: [AudGraphAsset(id: 'song', path: 'songs/a.sfz')],
     nodes: [
       AudGraphDocumentNode(
         id: 'osc',
@@ -73,6 +74,33 @@ void main() {
         const AudGraphDocument(),
       );
       expect(const AudGraphDocument().toJson().containsKey('name'), isFalse);
+      expect(const AudGraphDocument().toJson().containsKey('assets'), isFalse);
+      expect(json['assets'], [
+        {'id': 'song', 'path': 'songs/a.sfz'},
+      ]);
+    });
+
+    test('validate() names duplicate and unknown assets', () {
+      const broken = AudGraphDocument(
+        assets: [
+          AudGraphAsset(id: 'a', path: 'a.wav'),
+          AudGraphAsset(id: 'a', path: 'b.wav'),
+        ],
+        nodes: [
+          AudGraphDocumentNode(
+            id: 'n',
+            typeId: 'x.y',
+            preset: AudNodePreset(
+              typeId: 'x.y',
+              strings: {'file': 'asset:b', 'name': 'plain'},
+            ),
+          ),
+        ],
+      );
+      expect(broken.validate(), [
+        'Duplicate asset id a',
+        'Unknown asset b in node n',
+      ]);
     });
 
     test('validate() names duplicate and unknown ids', () {
@@ -171,6 +199,29 @@ void main() {
           'schema': 1,
           'transport': {'loopStart': 1},
         },
+        'transport loop order': {
+          'schema': 1,
+          'transport': {'loopStart': 4, 'loopEnd': 4},
+        },
+        'assets list': {'schema': 1, 'assets': 'x'},
+        'asset id': {
+          'schema': 1,
+          'assets': [
+            {'id': '1x', 'path': 'a'},
+          ],
+        },
+        'asset path': {
+          'schema': 1,
+          'assets': [
+            {'id': 'a', 'path': ''},
+          ],
+        },
+        'asset key': {
+          'schema': 1,
+          'assets': [
+            {'id': 'a', 'path': 'a', 'size': 3},
+          ],
+        },
       };
       for (final entry in cases.entries) {
         expect(
@@ -222,6 +273,22 @@ void main() {
       });
     },
   );
+
+  group('AudGraphAsset', () {
+    test('names assets in string settings and compares by content', () {
+      const asset = AudGraphAsset(id: 'song', path: 'a.sfz');
+      expect(AudGraphAsset.reference('song'), 'asset:song');
+      expect(AudGraphAsset.idOf('asset:song'), 'song');
+      expect(AudGraphAsset.idOf('a.sfz'), isNull);
+      expect(AudGraphAsset.fromJson(asset.toJson()), asset);
+      expect(
+        asset.hashCode,
+        const AudGraphAsset(id: 'song', path: 'a.sfz').hashCode,
+      );
+      expect(asset == const AudGraphAsset(id: 'song', path: 'b.sfz'), isFalse);
+      expect(asset.toString(), 'AudGraphAsset({id: song, path: a.sfz})');
+    });
+  });
 
   group('AudGraphTransportSettings', () {
     test('needs a start and an end for a loop', () {

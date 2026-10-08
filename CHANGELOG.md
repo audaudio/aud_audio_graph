@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Add the headless host, stress tests and watchdog (ticket 20)
+
+- Add the headless host aud_host_* (plugin-002): graph documents with presets, state blobs and assets, stable parameter ids, latency and tail, the graph's events for the host
+- Park a node for its state calls: no realtime call overlaps them; its events, parameter changes and resets wait for its next block
+- Add the output tail and aud_graph_render_host with an event output and a freewheel flag
+- Add the debug watchdog behind AUD_GRAPH_WATCHDOG and the user define watchdog
+- Add stress tests; run the native tests under ASan/UBSan, RealtimeSanitizer and ThreadSanitizer
+- Reserve scheduler places at the enqueue and budget scheduled events per block
+- Keep the transport position across prepare and stop; close tracked notes after a restart
+- Keep a note on and its own note off in order; only a sounding note retriggers
+- Fix two data races the thread sanitizer found: the tap ring and the pending program
+- Refuse descriptors without parameter or string ids
+- Add AudHost and the asset table of the graph document on the Dart side
+
 ## 0.2.0 - 2026-10-08
 
 ### Changed

@@ -42,6 +42,28 @@
     "outputChannels": {
       "$ref": "#/$defs/channels"
     },
+    "assets": {
+      "description": "The files the nodes load; a string setting names one as asset:<id>.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "path"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/$defs/nodeId"
+          },
+          "path": {
+            "description": "Relative to the base directory of the host, or absolute.",
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
     "nodes": {
       "type": "array",
       "items": {

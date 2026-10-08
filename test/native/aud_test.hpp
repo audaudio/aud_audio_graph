@@ -6,13 +6,15 @@
 
 // A tiny test harness for the native tests: AUD_TEST registers a test,
 // AUD_CHECK records a failure with its location, the runner prints the
-// summary and returns the failure count.
+// summary and returns the failure count. AUD_TEST_FILTER in the
+// environment runs only the tests whose name contains it.
 
 #ifndef AUD_TEST_HPP
 #define AUD_TEST_HPP
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <string>
 #include <vector>
@@ -39,6 +41,12 @@ inline const char*& currentTest() {
   return name;
 }
 
+// Runs after every test body, e.g. a check of the watchdog.
+inline std::function<void()>& afterEach() {
+  static std::function<void()> hook;
+  return hook;
+}
+
 struct Registrar {
   Registrar(const char* name, std::function<void()> body) {
     tests().push_back({name, std::move(body)});
@@ -60,11 +68,18 @@ inline bool near(double a, double b, double tolerance, const char* file,
 }
 
 inline int run() {
+  const char* filter = std::getenv("AUD_TEST_FILTER");
   int passed = 0;
+  size_t ran = 0;
   for (const Test& test : tests()) {
+    if (filter != nullptr && test.name.find(filter) == std::string::npos) {
+      continue;
+    }
+    ran += 1;
     const int before = failures();
     currentTest() = test.name.c_str();
     test.body();
+    if (afterEach()) afterEach()();
     if (failures() == before) {
       passed += 1;
     } else {
@@ -72,7 +87,7 @@ inline int run() {
     }
   }
   std::printf("%d of %zu native tests passed, %d checks failed\n", passed,
-              tests().size(), failures());
+              ran, failures());
   return failures() == 0 ? 0 : 1;
 }
 

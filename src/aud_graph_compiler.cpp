@@ -319,6 +319,44 @@ class Compiler {
       program_->nodes[i].lead = lead;
       instance->lead = lead;
     }
+    computeTail();
+  }
+
+  // The tail of the program (ticket 20): the longest node tail plus the
+  // path latency from that node to the output, infinite when a node says
+  // so. Only steady paths count: a connection that is fading out after a
+  // disconnect is gone within the fade, while a connection that carries
+  // the tail of a retired node stays until the node is done.
+  void computeTail() {
+    std::vector<bool> steady(vertices_.size(), false);
+    for (auto it = order_.rbegin(); it != order_.rend(); ++it) {
+      const uint32_t v = *it;
+      for (const EdgeUse& use : uses_) {
+        if (use.srcVertex != v) continue;
+        if (use.edge->retiring && fadesOut(use)) continue;
+        if (use.dstVertex == kGraphVertex || steady[use.dstVertex]) {
+          steady[v] = true;
+          break;
+        }
+      }
+    }
+    uint32_t tail = 0;
+    bool infinite = false;
+    for (uint32_t i = 0; i < program_->nodes.size(); ++i) {
+      const Vertex& vertex = vertices_[readerVertex_[i]];
+      const NodeInstance* instance = instanceAt(i);
+      if (!steady[readerVertex_[i]] || instance->tail == 0 ||
+          program_->outputLatency < vertex.aligned) {
+        continue;
+      }
+      if (instance->tail == AUD_TAIL_INFINITE) {
+        infinite = true;
+      } else {
+        tail = std::max(tail, instance->tail + program_->outputLatency -
+                                  vertex.aligned);
+      }
+    }
+    program_->outputTail = infinite ? AUD_TAIL_INFINITE : tail;
   }
 
   // Computes the delays of the connections into a vertex and returns the
@@ -641,6 +679,11 @@ class Compiler {
                 return a.fromNode < b.fromNode ||
                        (a.fromNode == b.fromNode && a.fromPort < b.fromPort);
               });
+    for (const EventRoute& route : program_->routes) {
+      if (route.fromNode == kGraphVertex && route.toNode != kGraphVertex) {
+        program_->graphFanout += 1;
+      }
+    }
   }
 
   // ..........................................................................

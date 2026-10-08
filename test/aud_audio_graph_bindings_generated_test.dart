@@ -101,6 +101,35 @@ void main() {
         expect(bindings.aud_graph_get_stats(nullptr, stats), lessThan(0));
         bindings.aud_graph_reset_stats(nullptr);
         bindings.aud_graph_destroy(nullptr);
+        // The calls of ticket 20.
+        expect(bindings.aud_graph_output_tail(nullptr), 0);
+        expect(
+          bindings.aud_graph_node_save_state(nullptr, 1, nullptr, 0, nullptr),
+          lessThan(0),
+        );
+        expect(
+          bindings.aud_graph_node_load_state(nullptr, 1, nullptr, 0, 0),
+          lessThan(0),
+        );
+        expect(bindings.aud_graph_render_host(nullptr, nullptr), lessThan(0));
+        expect(bindings.aud_host_create(nullptr, nullptr), nullptr);
+        expect(bindings.aud_host_graph(nullptr), nullptr);
+        expect(bindings.aud_host_load(nullptr, nullptr, 0), lessThan(0));
+        expect(
+          bindings.aud_host_save(nullptr, nullptr, 0, nullptr),
+          lessThan(0),
+        );
+        expect(bindings.aud_host_num_nodes(nullptr), lessThan(0));
+        expect(bindings.aud_host_num_params(nullptr), lessThan(0));
+        expect(bindings.aud_host_num_assets(nullptr), lessThan(0));
+        expect(bindings.aud_host_latency(nullptr), lessThan(0));
+        expect(bindings.aud_host_tail(nullptr), 0);
+        expect(bindings.aud_host_render(nullptr, nullptr), lessThan(0));
+        expect(
+          bindings.aud_host_last_error(nullptr).cast<Utf8>().toDartString(),
+          isEmpty,
+        );
+        bindings.aud_host_destroy(nullptr);
       } finally {
         calloc.free(stats);
         calloc.free(notification);

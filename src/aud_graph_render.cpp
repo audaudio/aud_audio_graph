@@ -18,6 +18,7 @@
 
 #include "aud_clock.h"
 #include "aud_graph_internal.hpp"
+#include "aud_graph_watchdog.hpp"
 #include "aud_transport.h"
 #include "aud_ump.h"
 
@@ -183,10 +184,26 @@ void notifyDiagnostic(AudGraph* graph, int32_t code, uint32_t count,
 // ............................................................................
 // The event table of the block
 
-uint32_t rankOf(const AudEvent& event) {
+uint32_t noteKey(const AudEvent& event) {
+  const uint32_t word0 = event.words[0];
+  return (aud_ump_message_type(word0) << 28) | (aud_ump_group(word0) << 24) |
+         (aud_ump_channel(word0) << 16) | (aud_ump_note(word0) << 8) |
+         (event.port & 0xff);
+}
+
+// The rank of an event among the events of its node at one offset: a note
+// off before the rest, the rest before note ons, each rank in the order the
+// events came in (interop-002). A note off ranks first only when its pitch
+// sounds - it can close an earlier note, so that a note on of the same
+// pitch retriggers. The note off of a pitch that does not sound belongs to
+// a note on of this block and keeps its order behind it: swapped, a note on
+// and its own note off at the same time would hang the note (ticket 20).
+uint32_t rankOf(const AudEvent& event, const NodeInstance* instance) {
   if (event.type != AUD_EVENT_UMP) return 1;
-  if (aud_ump_is_note_off(event.words[0], event.words[1])) return 0;
   if (aud_ump_is_note_on(event.words[0], event.words[1])) return 2;
+  if (aud_ump_is_note_off(event.words[0], event.words[1])) {
+    return instance->notes.contains(noteKey(event)) ? 0 : 2;
+  }
   return 1;
 }
 
@@ -199,12 +216,57 @@ bool addBlockEvent(AudGraph* graph, uint32_t node, const AudEvent& event,
   }
   BlockEvent& entry = graph->blockEvents[graph->numBlockEvents++];
   entry.node = node;
-  entry.rank = rankOf(event);
+  entry.rank = rankOf(event, graph->current->nodes[node].instance);
   entry.sequence = sequence;
   entry.event = event;
   entry.event.struct_size = sizeof(AudEvent);
   entry.event.sample_offset = offset;
   return true;
+}
+
+// An event reached the graph's event input: the host's event output takes
+// it when the block renders through aud_graph_render_host (ticket 20),
+// otherwise the control thread gets a notification.
+void outputEvent(AudGraph* graph, int32_t node, const AudEvent& event,
+                 uint32_t offset) {
+  AudHostRenderRequest* host = graph->hostRequest;
+  if (host != nullptr && host->max_output_events > 0) {
+    if (host->num_output_events >= host->max_output_events) {
+      host->dropped_output_events += 1;
+      graph->diagnostics.overflow += 1;
+      graph->eventsDropped.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
+    AudEvent& out = host->output_events[host->num_output_events++];
+    out = event;
+    out.struct_size = sizeof(AudEvent);
+    out.sample_offset = offset;
+    return;
+  }
+  AudGraphNotification n = makeNotification(graph, AUD_NOTIFY_EVENT);
+  n.node = node;
+  n.event = event;
+  n.event.struct_size = sizeof(AudEvent);
+  n.event.sample_offset = offset;
+  notify(graph, n);
+}
+
+// Orders the host's event output by offset; stable, so events of one
+// node keep their order. Insertion sort - nothing may allocate here: every
+// source - the host's events, each node - adds its events in ascending
+// offset, so the cost grows with the events times the sources that
+// interleave, not with their square.
+void sortOutputEvents(AudHostRenderRequest* host) {
+  AudEvent* events = host->output_events;
+  for (uint32_t i = 1; i < host->num_output_events; ++i) {
+    const AudEvent event = events[i];
+    uint32_t k = i;
+    while (k > 0 && events[k - 1].sample_offset > event.sample_offset) {
+      events[k] = events[k - 1];
+      k -= 1;
+    }
+    events[k] = event;
+  }
 }
 
 // Routes an event that leaves the graph's event output.
@@ -215,10 +277,9 @@ void routeGraphEvent(AudGraph* graph, const AudEvent& event, uint32_t offset,
   for (const EventRoute& route : program->routes) {
     if (route.fromNode != kGraphTarget || route.fromPort != event.port) continue;
     if (route.toNode == kGraphTarget) {
-      AudGraphNotification n = makeNotification(graph, AUD_NOTIFY_EVENT);
-      n.event = event;
-      n.event.sample_offset = offset;
-      notify(graph, n);
+      AudEvent routed = event;
+      routed.port = route.toPort;
+      outputEvent(graph, AUD_GRAPH_NODE, routed, offset);
       continue;
     }
     AudEvent routed = event;
@@ -227,22 +288,24 @@ void routeGraphEvent(AudGraph* graph, const AudEvent& event, uint32_t offset,
   }
 }
 
-uint32_t noteKey(const AudEvent& event) {
-  const uint32_t word0 = event.words[0];
-  return (aud_ump_message_type(word0) << 28) | (aud_ump_group(word0) << 24) |
-         (aud_ump_channel(word0) << 16) | (aud_ump_note(word0) << 8) |
-         (event.port & 0xff);
-}
 
-void trackNote(AudGraph* graph, NodeInstance* instance, const AudEvent& event) {
-  if (event.type != AUD_EVENT_UMP) return;
+// Tracks the note of an event; false for a note on the tracker cannot
+// hold: it is not delivered, since it could never be closed (interop-002).
+bool trackNote(AudGraph* graph, NodeInstance* instance, const AudEvent& event) {
+  if (event.type != AUD_EVENT_UMP) return true;
   const uint32_t word0 = event.words[0];
   const uint32_t word1 = event.words[1];
   if (aud_ump_is_note_on(word0, word1)) {
-    if (!instance->notes.add(noteKey(event))) graph->diagnostics.trackerFull += 1;
-  } else if (aud_ump_is_note_off(word0, word1)) {
+    if (instance->notes.add(noteKey(event))) return true;
+    graph->diagnostics.trackerFull += 1;
+    graph->diagnostics.trackerFullNode = instance->handle;
+    graph->eventsDropped.fetch_add(1, std::memory_order_relaxed);
+    return false;
+  }
+  if (aud_ump_is_note_off(word0, word1)) {
     instance->notes.remove(noteKey(event));
   }
+  return true;
 }
 
 // Closes every running note of a node with a note off at the block start.
@@ -270,6 +333,13 @@ void closeNotes(AudGraph* graph, NodeInstance* instance, uint32_t node) {
 
 // ............................................................................
 // Adoption (graph-003)
+
+// Gives places of the scheduler back to the control thread (ticket 20).
+void releaseScheduled(AudGraph* graph, uint32_t count) {
+  if (count > 0) {
+    graph->schedulerReserved.fetch_sub(count, std::memory_order_acq_rel);
+  }
+}
 
 void adoptPending(AudGraph* graph) {
   if (graph->pending.load(std::memory_order_acquire) == nullptr) return;
@@ -302,6 +372,7 @@ void adoptPending(AudGraph* graph) {
                            : graph->fadeFrames;
     closeNotes(graph, instance, instance->rtIndex);
     const uint32_t purged = graph->scheduler.cancel(instance, 0);
+    releaseScheduled(graph, purged);
     graph->diagnostics.retired += purged;
     graph->eventsDropped.fetch_add(purged, std::memory_order_relaxed);
   }
@@ -664,9 +735,12 @@ void applyTransportResets(AudGraph* graph) {
     const bool onStop = stopped && (caps & AUD_NODE_CAP_RESET_ON_STOP);
     const bool onSeek = seeked && (caps & AUD_NODE_CAP_RESET_ON_SEEK);
     if (!onStop && !onSeek) continue;
-    if (instance->descriptor->vtable->reset != nullptr) {
-      instance->descriptor->vtable->reset(
-          instance->instance, onStop ? AUD_RESET_STOP : AUD_RESET_SEEK);
+    const uint32_t reason = onStop ? AUD_RESET_STOP : AUD_RESET_SEEK;
+    if (instance->parked.load(std::memory_order_seq_cst)) {
+      // A state call runs: the reset waits for the node's next block.
+      instance->pendingReset = reason;
+    } else if (instance->descriptor->vtable->reset != nullptr) {
+      instance->descriptor->vtable->reset(instance->instance, reason);
     }
     closeNotes(graph, instance, i);
   }
@@ -767,32 +841,32 @@ void dropLate(AudGraph* graph, NodeInstance* instance, const AudEvent& event,
 }
 
 // Places an event of the queue: into the block, into the scheduler, or
-// nowhere.
-void deliverEvent(AudGraph* graph, const Command& command) {
+// nowhere; true when the scheduler keeps it.
+bool deliverEvent(AudGraph* graph, const Command& command) {
   NodeInstance* instance = command.instance;
   if (instance != nullptr && (graph->current == nullptr || !acceptsEvents(instance))) {
     graph->diagnostics.retired += 1;
     graph->eventsDropped.fetch_add(1, std::memory_order_relaxed);
-    return;
+    return false;
   }
   if (command.at.domain == AUD_TIME_IMMEDIATE) {
     deliverNow(graph, instance, command.event, 0, command.sequence);
-    return;
+    return false;
   }
   const uint32_t lead = leadOf(graph, instance, command.event);
   uint32_t offset = 0;
   const int32_t result = resolveLead(graph, command.at, lead, &offset);
   if (result == AUD_OK) {
     deliverNow(graph, instance, command.event, offset, command.sequence);
-    return;
+    return false;
   }
   if (result == AUD_ERROR_LATE) {
     dropLate(graph, instance, command.event, command.sequence);
-    return;
+    return false;
   }
   if (result == AUD_ERROR_INVALID_ARGUMENT) {
     graph->eventsDropped.fetch_add(1, std::memory_order_relaxed);
-    return;
+    return false;
   }
   ScheduledEvent scheduled;
   scheduled.instance = instance;
@@ -801,24 +875,39 @@ void deliverEvent(AudGraph* graph, const Command& command) {
   scheduled.key = keyOf(graph, command.at, lead);
   scheduled.id = command.id;
   scheduled.sequence = command.sequence;
+  // The reservation of the control thread keeps a place free for it; the
+  // check stays for a scheduler that is full anyway.
   if (!graph->scheduler.push(scheduled)) {
     graph->diagnostics.schedulerFull += 1;
     graph->eventsDropped.fetch_add(1, std::memory_order_relaxed);
+    return false;
   }
+  return true;
 }
 
-// Moves the events whose time has come from the scheduler into the block.
+// Moves the events whose time has come from the scheduler into the block:
+// at most the budget of a block (interop-002); the rest waits in the
+// scheduler, in order, and follows in the next block.
 void popScheduled(AudGraph* graph) {
   Scheduler& scheduler = graph->scheduler;
+  uint32_t budget = graph->config.max_events_per_block;
   for (uint32_t domain = 0; domain < 3; ++domain) {
-    while (true) {
+    while (budget > 0) {
       const uint32_t index = scheduler.top(domain);
       if (index == UINT32_MAX) break;
       const ScheduledEvent& event = scheduler.pool[index];
       NodeInstance* instance = event.instance;
+      // An event of the graph's event output becomes one block event per
+      // route; without room for all of them it waits for the next block.
+      const uint32_t needed =
+          instance == nullptr && graph->current != nullptr
+              ? graph->current->graphFanout
+              : 1;
+      if (graph->numBlockEvents + needed > graph->blockEvents.size()) break;
       if (instance != nullptr && (graph->current == nullptr || !acceptsEvents(instance))) {
         scheduler.pop(domain);
         scheduler.release(index);
+        releaseScheduled(graph, 1);
         graph->diagnostics.retired += 1;
         graph->eventsDropped.fetch_add(1, std::memory_order_relaxed);
         continue;
@@ -830,6 +919,8 @@ void popScheduled(AudGraph* graph) {
       const ScheduledEvent copy = event;
       scheduler.pop(domain);
       scheduler.release(index);
+      releaseScheduled(graph, 1);
+      budget -= 1;
       if (result == AUD_OK) {
         deliverNow(graph, copy.instance, copy.event, offset, copy.sequence);
       } else if (result == AUD_ERROR_LATE) {
@@ -884,10 +975,13 @@ void drainParams(AudGraph* graph) {
       graph->eventsDropped.fetch_add(1, std::memory_order_relaxed);
       continue;
     }
-    if (command.rampFrames == 0) {
+    if (command.rampFrames == 0 &&
+        !instance->parked.load(std::memory_order_seq_cst)) {
       instance->descriptor->vtable->set_param(instance->instance, command.param,
                                               command.value);
     } else {
+      // A ramp, or a node parked for a state call: the change travels as an
+      // event of the block, postponed with the node's other events.
       addBlockEvent(graph, instance->rtIndex,
                     aud_event_param(command.param, command.value,
                                     command.rampFrames, 0),
@@ -918,14 +1012,46 @@ void drainCommands(AudGraph* graph) {
   graph->poppedSequence.store(popped, std::memory_order_release);
 }
 
+// Closes the notes a stop or a prepare left open (lifecycle-001): the
+// control thread reset the nodes while no block rendered, the note offs
+// reach them at the start of the first block after the restart.
+void closePendingNotes(AudGraph* graph) {
+  if (!graph->closeNotesPending) return;
+  graph->closeNotesPending = false;
+  Program* program = graph->current;
+  if (program == nullptr) return;
+  for (uint32_t i = 0; i < program->nodes.size(); ++i) {
+    NodeInstance* instance = program->nodes[i].instance;
+    if (instance->notes.count > 0) closeNotes(graph, instance, i);
+  }
+}
+
+// Hands the events postponed for parked nodes to the block, at its start
+// and in their order, to the nodes that still take events (ticket 20).
+void deliverDeferred(AudGraph* graph) {
+  const uint32_t count = graph->numDeferred;
+  graph->numDeferred = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    const DeferredEvent& deferred = graph->deferred[i];
+    if (graph->current == nullptr || !acceptsEvents(deferred.instance)) {
+      graph->diagnostics.retired += 1;
+      graph->eventsDropped.fetch_add(1, std::memory_order_relaxed);
+      continue;
+    }
+    addBlockEvent(graph, deferred.instance->rtIndex, deferred.event, 0,
+                  deferred.sequence);
+  }
+}
+
 // Places the popped events and applies the cancellations in their order.
 void deliverPopped(AudGraph* graph) {
   for (uint32_t i = 0; i < graph->numPopped; ++i) {
     const Command& command = graph->popped[i];
     if (command.kind == CommandKind::cancel) {
-      graph->scheduler.cancel(command.instance, command.id);
-    } else {
-      deliverEvent(graph, command);
+      releaseScheduled(graph,
+                       graph->scheduler.cancel(command.instance, command.id));
+    } else if (!deliverEvent(graph, command) && command.reserved) {
+      releaseScheduled(graph, 1);
     }
   }
 }
@@ -982,10 +1108,13 @@ uint32_t gatherEvents(AudGraph* graph, uint32_t node, NodeInstance* instance) {
     count += 1;
     index = graph->emitted[index].next;
   }
+  uint32_t kept = 0;
   for (uint32_t i = 0; i < count; ++i) {
-    trackNote(graph, instance, graph->nodeEvents[i]);
+    if (!trackNote(graph, instance, graph->nodeEvents[i])) continue;
+    if (kept != i) graph->nodeEvents[kept] = graph->nodeEvents[i];
+    kept += 1;
   }
-  return count;
+  return kept;
 }
 
 // ............................................................................
@@ -1174,11 +1303,67 @@ void runWrapped(AudGraph* graph, NodeInstance* instance,
   (void)graph;
 }
 
+// Keeps an event of a parked node for the next block; 0 when the buffer
+// is full and the event is dropped.
+uint32_t postpone(AudGraph* graph, NodeInstance* instance,
+                  const AudEvent& event, uint64_t sequence) {
+  if (graph->numDeferred >= graph->deferred.size()) {
+    graph->diagnostics.overflow += 1;
+    graph->eventsDropped.fetch_add(1, std::memory_order_relaxed);
+    return 0;
+  }
+  DeferredEvent& deferred = graph->deferred[graph->numDeferred++];
+  deferred.instance = instance;
+  deferred.event = event;
+  deferred.sequence = sequence;
+  return 1;
+}
+
+// A parked node (ticket 20): the control thread runs one of its state
+// calls, so the block leaves it alone and clears its outputs; its events
+// wait for the next block - a note off dropped here would hang a note.
+void skipParked(AudGraph* graph, const Job& job, uint32_t frames) {
+  Program* program = graph->current;
+  ProgramNode& node = program->nodes[job.node];
+  for (uint32_t b = 0; b < node.numOutputBuses; ++b) {
+    const AudAudioBus& bus = program->buses[node.firstOutputBus + b];
+    clearChannels(bus.channels, bus.num_channels, frames);
+  }
+  const NodeRange& range = graph->nodeRanges[job.node];
+  uint32_t postponed = 0;
+  for (uint32_t k = range.begin; k < range.end; ++k) {
+    const BlockEvent& entry = graph->blockEvents[k];
+    postponed += postpone(graph, node.instance, entry.event, entry.sequence);
+  }
+  for (uint32_t index = range.emittedHead; index != UINT32_MAX;
+       index = graph->emitted[index].next) {
+    postponed += postpone(graph, node.instance, graph->emitted[index].event, 0);
+  }
+  // One diagnostic when the park begins; the blocks after it postpone the
+  // same events again.
+  if (!node.instance->rtParked) {
+    notifyDiagnostic(graph, AUD_ERROR_STATE, postponed, node.instance->handle);
+    node.instance->rtParked = true;
+  }
+}
+
 void runNode(AudGraph* graph, const Job& job, uint32_t frames) {
   Program* program = graph->current;
   ProgramNode& node = program->nodes[job.node];
   if (node.skip) return;
   NodeInstance* instance = node.instance;
+  if (instance->parked.load(std::memory_order_seq_cst)) {
+    skipParked(graph, job, frames);
+    return;
+  }
+  instance->rtParked = false;
+  if (instance->pendingReset != kNoReset) {
+    if (instance->descriptor->vtable->reset != nullptr) {
+      instance->descriptor->vtable->reset(instance->instance,
+                                          instance->pendingReset);
+    }
+    instance->pendingReset = kNoReset;
+  }
   const uint32_t numEvents = gatherEvents(graph, job.node, instance);
   AudProcessContext context{};
   context.struct_size = sizeof(AudProcessContext);
@@ -1261,13 +1446,13 @@ void runTap(AudGraph* graph, const Job& job, uint32_t frames) {
   tap.generation.fetch_add(1, std::memory_order_acq_rel);
   const uint32_t ringFrames = tap.ringFrames;
   for (uint32_t c = 0; c < tap.channels && c < job.srcChannels; ++c) {
-    float* ring = tap.ring.data() + static_cast<size_t>(c) * ringFrames;
+    std::atomic<float>* ring = tap.ring.get() + static_cast<size_t>(c) * ringFrames;
     float peak = 0;
     double sum = 0;
-    uint32_t pos = tap.writePos;
+    uint32_t pos = tap.writePos.load(std::memory_order_relaxed);
     for (uint32_t i = 0; i < frames; ++i) {
       const float v = src[c][i];
-      ring[pos] = v;
+      ring[pos].store(v, std::memory_order_relaxed);
       pos = pos + 1 == ringFrames ? 0 : pos + 1;
       peak = std::max(peak, std::fabs(v));
       sum += static_cast<double>(v) * v;
@@ -1277,7 +1462,9 @@ void runTap(AudGraph* graph, const Job& job, uint32_t frames) {
         frames == 0 ? 0.0f : static_cast<float>(std::sqrt(sum / frames)),
         std::memory_order_relaxed);
   }
-  tap.writePos = (tap.writePos + frames) % ringFrames;
+  tap.writePos.store(
+      (tap.writePos.load(std::memory_order_relaxed) + frames) % ringFrames,
+      std::memory_order_relaxed);
   tap.generation.fetch_add(1, std::memory_order_acq_rel);
 }
 
@@ -1355,10 +1542,15 @@ void resetScratch(AudGraph* graph) {
   graph->diagnostics = BlockDiagnostics{};
   graph->blockNotified = false;
   graph->pendingSeek = false;
+}
+
+// Clears the event ranges of the nodes of the adopted program. Only the
+// program the realtime thread owns is read: a pending one may be freed by
+// the control thread at any moment when it publishes a newer one - reading
+// its size here was a use after free that ThreadSanitizer found (ticket 20).
+void resetNodeRanges(AudGraph* graph) {
   const Program* program = graph->current;
-  const Program* pending = graph->pending.load(std::memory_order_acquire);
-  const size_t count = std::max(program == nullptr ? 0 : program->nodes.size(),
-                                pending == nullptr ? 0 : pending->nodes.size());
+  const size_t count = program == nullptr ? 0 : program->nodes.size();
   for (size_t i = 0; i < count && i < graph->nodeRanges.size(); ++i) {
     graph->nodeRanges[i] = NodeRange{};
   }
@@ -1369,7 +1561,8 @@ void reportDiagnostics(AudGraph* graph) {
   notifyDiagnostic(graph, AUD_ERROR_LATE, d.late);
   notifyDiagnostic(graph, AUD_ERROR_RETIRED, d.retired);
   notifyDiagnostic(graph, AUD_ERROR_QUEUE_FULL, d.overflow);
-  notifyDiagnostic(graph, AUD_ERROR_CAPACITY, d.schedulerFull + d.trackerFull);
+  notifyDiagnostic(graph, AUD_ERROR_CAPACITY, d.schedulerFull + d.trackerFull,
+                   d.trackerFull > 0 ? d.trackerFullNode : 0);
   notifyDiagnostic(graph, AUD_ERROR_UNSUPPORTED, d.transportRefused);
 }
 
@@ -1440,12 +1633,25 @@ int64_t beatNow(AudGraph* graph) {
   return beatAt(graph, graph->samplePosition.load(std::memory_order_relaxed));
 }
 
-void resetTransport(AudGraph* graph) {
+// Moves the anchor of the internal transport to the current sample
+// position with the current rate and tempo, so that a following change of
+// the sample rate or a stop keeps the beat (lifecycle-001).
+void anchorTransport(AudGraph* graph) {
   InternalTransport& t = graph->transport;
   const int64_t position = graph->samplePosition.load(std::memory_order_relaxed);
   t.anchorBeat = beatAt(graph, position);
   t.anchorSample = position;
-  for (PendingRequest& pending : t.pending) pending.used = false;
+}
+
+void resetTransport(AudGraph* graph) {
+  anchorTransport(graph);
+  for (PendingRequest& pending : graph->transport.pending) pending.used = false;
+  publishTransportState(graph);
+}
+
+// Publishes the internal transport as it stands, while no block renders.
+void publishTransportState(AudGraph* graph) {
+  const InternalTransport& t = graph->transport;
   graph->lastPlaying = t.playing;
   graph->publishedPlaying.store(t.playing ? 1 : 0, std::memory_order_relaxed);
   graph->publishedBeat.store(t.anchorBeat, std::memory_order_relaxed);
@@ -1485,12 +1691,9 @@ void emitEvent(AudGraph* graph, void* instance, const AudEvent* event) {
        ++it) {
     const EventRoute& route = *it;
     if (route.toNode == kGraphTarget) {
-      AudGraphNotification n = makeNotification(graph, AUD_NOTIFY_EVENT);
-      n.node = node.instance->handle;
-      n.event = *event;
-      n.event.struct_size = sizeof(AudEvent);
-      n.event.sample_offset = offset;
-      notify(graph, n);
+      AudEvent routed = *event;
+      routed.port = route.toPort;
+      outputEvent(graph, node.instance->handle, routed, offset);
       continue;
     }
     if (graph->numEmitted >= graph->emitted.size()) {
@@ -1515,8 +1718,18 @@ void emitEvent(AudGraph* graph, void* instance, const AudEvent* event) {
   }
 }
 
+// Reports what the watchdog caught in the block (ticket 20).
+void reportWatchdog(AudGraph* graph) {
+  const uint32_t hits = watchdogBlockHits();
+  if (hits == 0) return;
+  graph->realtimeViolations.fetch_add(hits, std::memory_order_relaxed);
+  notifyDiagnostic(graph, AUD_GRAPH_ERROR_REALTIME_VIOLATION, hits, 0,
+                   watchdogBlockKinds());
+}
+
 // [realtime] Renders one block.
-int32_t renderBlock(AudGraph* graph, const AudRenderRequest* request) {
+int32_t renderBlock(AudGraph* graph,
+                    const AudRenderRequest* request) AUD_NONBLOCKING {
   if (!validRequest(graph, request)) {
     clearOutputs(request);
     return AUD_ERROR_INVALID_ARGUMENT;
@@ -1526,12 +1739,15 @@ int32_t renderBlock(AudGraph* graph, const AudRenderRequest* request) {
   resetScratch(graph);
   computeStreamTime(graph, request);
   adoptPending(graph);
+  resetNodeRanges(graph);
   if (!graph->stateObserved) {
     AudGraphNotification n = makeNotification(graph, AUD_NOTIFY_STATE);
     n.code = AUD_GRAPH_RUNNING;
     notify(graph, n);
     graph->stateObserved = true;
   }
+  closePendingNotes(graph);
+  deliverDeferred(graph);
   drainParams(graph);
   drainCommands(graph);
   captureTransport(graph, request);
@@ -1543,7 +1759,10 @@ int32_t renderBlock(AudGraph* graph, const AudRenderRequest* request) {
     routeGraphEvent(graph, event, std::min(event.sample_offset, frames - 1), 0);
   }
   sortBlockEvents(graph);
-  if (graph->current != nullptr) {
+  // A program compiled for a smaller block would overflow its buffers; a
+  // prepare publishes a new one, adopted above unless every retired slot
+  // is taken, so this block stays silent then.
+  if (graph->current != nullptr && frames <= graph->current->maxFrames) {
     patchPointers(graph, request);
     runJobs(graph, frames);
     finishRetirement(graph, frames);
@@ -1560,7 +1779,9 @@ int32_t renderBlock(AudGraph* graph, const AudRenderRequest* request) {
   graph->scheduledCount.store(graph->scheduler.count, std::memory_order_release);
   graph->blocksRendered.fetch_add(1, std::memory_order_relaxed);
   graph->framesRendered.fetch_add(frames, std::memory_order_relaxed);
+  if (graph->hostRequest != nullptr) sortOutputEvents(graph->hostRequest);
   reportDiagnostics(graph);
+  reportWatchdog(graph);
   const int64_t elapsed = aud_clock_now_ns() - start;
   graph->renderSum.fetch_add(elapsed, std::memory_order_relaxed);
   if (elapsed > graph->renderMax.load(std::memory_order_relaxed)) {

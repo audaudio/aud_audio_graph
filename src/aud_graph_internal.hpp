@@ -27,6 +27,15 @@
 #include "aud_spsc_queue.hpp"
 #include "aud_time_filter.h"
 
+// With AUD_GRAPH_RTSAN the realtime path carries Clang's nonblocking
+// effect, so that the RealtimeSanitizer checks everything a block calls
+// (ticket 20, decision 8); other toolchains see nothing.
+#if AUD_GRAPH_RTSAN && defined(__clang__)
+#define AUD_NONBLOCKING [[clang::nonblocking]]
+#else
+#define AUD_NONBLOCKING
+#endif
+
 namespace aud {
 
 // The defaults of AudGraphConfig.
@@ -56,6 +65,8 @@ constexpr uint32_t kMaxAlignmentFrames = 1u << 20;
 constexpr uint32_t kMinTapRingFrames = 8192;
 // Retries of a tap read while the realtime thread writes the ring.
 constexpr uint32_t kTapReadAttempts = 16;
+// No reset waits for a node.
+constexpr uint32_t kNoReset = UINT32_MAX;
 
 struct NodeInstance;
 struct Program;
@@ -75,6 +86,7 @@ struct Command {
   AudEvent event{};
   AudTimestamp at{};
   AudTransportRequest request{};
+  bool reserved = false;  // holds a place in the scheduler (ticket 20)
 };
 
 // A command of the parameter queue.
@@ -103,6 +115,14 @@ struct NoteTracker {
     if (count == kCapacity) return false;
     notes[count++] = key;
     return true;
+  }
+
+  // Whether a note sounds.
+  bool contains(uint32_t key) const {
+    for (uint32_t i = 0; i < count; ++i) {
+      if (notes[i] == key) return true;
+    }
+    return false;
   }
 
   // Forgets a note.
@@ -163,12 +183,15 @@ struct Scheduler {
 
 enum class Builtin : uint8_t { none, feedback, tap };
 
-// The state of a tap node, read by the control thread.
+// The state of a tap node, read by the control thread. The ring and its
+// write position are relaxed atomics: the control thread reads them while
+// the realtime thread writes, the generation (a seqlock) tells a torn read
+// apart; plain floats there were a data race (ticket 20, ThreadSanitizer).
 struct TapState {
   uint32_t channels = 0;
   uint32_t ringFrames = 0;
-  std::vector<float> ring;  // channels x ringFrames
-  uint32_t writePos = 0;
+  std::unique_ptr<std::atomic<float>[]> ring;  // channels x ringFrames
+  std::atomic<uint32_t> writePos{0};
   std::atomic<uint32_t> generation{0};
   std::atomic<float> peak[kMaxChannels];
   std::atomic<float> rms[kMaxChannels];
@@ -220,11 +243,20 @@ struct NodeInstance {
   NoteTracker notes;
   bool rtRetired = false;
   bool rtDone = false;
+  // A transport reset that came while the node was parked (ticket 20); it
+  // runs before the node's next process call.
+  uint32_t pendingReset = kNoReset;
+  bool rtParked = false;  // the last block skipped the node
   bool rtStopped = false;        // the transport was stopped at the last block
   uint32_t fadeRemaining = 0;    // the incoming fade
   uint32_t tailRemaining = 0;    // the tail, or the outgoing fade
   // Realtime thread writes, control thread reads.
   std::atomic<bool> done{false};
+  // Control thread sets for a state call (ticket 20). While it is set the
+  // realtime thread makes no call of the vtable: process is skipped,
+  // set_param travels as an event, a reset waits; the node's events wait
+  // for the next block. Sequentially consistent, like the state.
+  std::atomic<bool> parked{false};
 };
 
 // The identity of an audio connection.
@@ -346,6 +378,7 @@ struct Program {
   bool first = false;  // the first program: edges start at full gain
   uint32_t maxFrames = 0;
   uint32_t outputLatency = 0;
+  uint32_t outputTail = 0;  // or AUD_TAIL_INFINITE
   std::vector<ProgramNode> nodes;
   std::vector<Job> jobs;
   std::vector<Slot> slots;
@@ -361,6 +394,8 @@ struct Program {
   std::vector<Edge*> fadeOut;  // retiring edges
   std::vector<NodeInstance*> retire;  // instances newly retired
   std::vector<EventRoute> routes;     // sorted by (fromNode, fromPort)
+  // The block events one event of the graph's event output becomes.
+  uint32_t graphFanout = 0;
 };
 
 // ............................................................................
@@ -409,6 +444,13 @@ struct EmittedEvent {
   uint32_t next = UINT32_MAX;
 };
 
+// An event of a parked node, kept for the next block (ticket 20).
+struct DeferredEvent {
+  NodeInstance* instance = nullptr;
+  AudEvent event{};
+  uint64_t sequence = 0;
+};
+
 struct NodeRange {
   uint32_t begin = 0;
   uint32_t end = 0;
@@ -423,6 +465,7 @@ struct BlockDiagnostics {
   uint32_t overflow = 0;  // block table or emitted arena
   uint32_t schedulerFull = 0;
   uint32_t trackerFull = 0;
+  int32_t trackerFullNode = 0;  // the last node whose tracker refused
   uint32_t transportRefused = 0;
 };
 
@@ -461,6 +504,7 @@ struct AudGraph {
   bool transactionOpen = false;
   uint32_t nextRevision = 1;
   uint32_t outputLatency = 0;
+  uint32_t outputTail = 0;
   bool hasProgram = false;
 
   // Program hand-over.
@@ -476,6 +520,10 @@ struct AudGraph {
   std::atomic<uint64_t> poppedSequence{0};
   aud::Scheduler scheduler;  // realtime thread
   std::atomic<uint32_t> scheduledCount{0};
+  // Places of the scheduler taken by events with a time: the control thread
+  // reserves one per event before the enqueue, the realtime thread gives it
+  // back when the event leaves the queue or the scheduler (ticket 20).
+  std::atomic<uint32_t> schedulerReserved{0};
 
   // Notifications.
   std::unique_ptr<AudSpscQueue<AudGraphNotification>> notifications;
@@ -500,6 +548,10 @@ struct AudGraph {
   AudTransportSnapshot snapshot{};
   bool lastPlaying = false;
   bool pendingSeek = false;  // an immediate seek flags the first segment
+  // A stop or a prepare reset the nodes while no block rendered; the first
+  // block after the restart closes their tracked notes (ticket 20). The
+  // control thread writes it before the state becomes running again.
+  bool closeNotesPending = false;
 
   // Transport, realtime thread, published through atomics.
   aud::InternalTransport transport;
@@ -520,12 +572,16 @@ struct AudGraph {
   std::vector<AudEvent> nodeEvents;
   std::vector<aud::EmittedEvent> emitted;
   uint32_t numEmitted = 0;
+  std::vector<aud::DeferredEvent> deferred;  // of parked nodes
+  uint32_t numDeferred = 0;
   std::vector<aud::NodeRange> nodeRanges;
   std::vector<float> silence;
   aud::BlockDiagnostics diagnostics;
   uint32_t currentNode = UINT32_MAX;  // the node job that runs
   bool offline = false;
   bool stateObserved = false;
+  // The host's event output of the block, realtime thread (ticket 20).
+  AudHostRenderRequest* hostRequest = nullptr;
 
   // Counters the realtime thread writes and the control thread reads.
   std::atomic<uint64_t> blocksRendered{0};
@@ -539,6 +595,7 @@ struct AudGraph {
   std::atomic<uint64_t> rejected{0};
   std::atomic<uint64_t> overloads{0};
   std::atomic<float> outputPeak{0};
+  std::atomic<uint64_t> realtimeViolations{0};
 };
 
 namespace aud {
@@ -558,7 +615,10 @@ Program* compileProgram(AudGraph* graph, const Topology& topology,
 void prepareRealtime(AudGraph* graph);
 void resetTime(AudGraph* graph);
 void resetTransport(AudGraph* graph);
-int32_t renderBlock(AudGraph* graph, const AudRenderRequest* request);
+void anchorTransport(AudGraph* graph);
+void publishTransportState(AudGraph* graph);
+int32_t renderBlock(AudGraph* graph,
+                    const AudRenderRequest* request) AUD_NONBLOCKING;
 void emitEvent(AudGraph* graph, void* instance, const AudEvent* event);
 int64_t beatNow(AudGraph* graph);
 
