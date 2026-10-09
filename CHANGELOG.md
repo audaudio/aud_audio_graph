@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Split the Dart API into neutral and ffi parts
+
 ## 0.3.0 - 2026-10-09
 
 ### Added
@@ -27,6 +33,7 @@
 - Refuse descriptors without parameter or string ids
 
 - Add AudHost and the asset table of the graph document on the Dart side
+
 
 ## 0.2.0 - 2026-10-08
 

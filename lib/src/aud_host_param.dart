@@ -6,7 +6,7 @@
 
 import 'dart:ffi';
 
-import 'package:aud_audio_core/aud_audio_core.dart';
+import 'package:aud_audio_core/aud_audio_core_ffi.dart';
 import 'package:ffi/ffi.dart';
 
 import 'aud_audio_graph_bindings_generated.dart' as bindings;
@@ -32,7 +32,7 @@ class AudHostParam {
     node: native.node,
     nodeId: native.node_id.cast<Utf8>().toDartString(),
     index: native.index,
-    descriptor: AudParamDescriptor.fromNative(native.descriptor.ref),
+    descriptor: native.descriptor.ref.toDart(),
     value: native.value,
   );
 

@@ -7,15 +7,15 @@
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:aud_audio_core/aud_audio_core.dart';
-import 'package:aud_audio_graph/aud_audio_graph.dart';
+import 'package:aud_audio_core/aud_audio_core_ffi.dart';
+import 'package:aud_audio_graph/aud_audio_graph_ffi.dart';
 import 'package:aud_midi_standard/aud_midi_standard.dart';
 import 'package:test/test.dart';
 
 void main() {
   group('AudOfflineRenderer', () {
     test('passes the input to the output in any block sizes', () {
-      final graph = AudGraph(
+      final graph = AudGraphFfi(
         listen: false,
         maxFrames: 256,
         inputChannels: const [1],
@@ -56,7 +56,7 @@ void main() {
     });
 
     test('checks the inputs', () {
-      final graph = AudGraph(listen: false, inputChannels: const [2]);
+      final graph = AudGraphFfi(listen: false, inputChannels: const [2]);
       addTearDown(graph.dispose);
       graph.start();
       final renderer = AudOfflineRenderer(graph);
@@ -82,7 +82,7 @@ void main() {
     });
 
     test('renders WAV data of the first output bus', () {
-      final graph = AudGraph(listen: false, outputChannels: const [2, 1]);
+      final graph = AudGraphFfi(listen: false, outputChannels: const [2, 1]);
       addTearDown(graph.dispose);
       final osc = graph.createNode(
         'aud.graph.oscillator',
@@ -95,7 +95,7 @@ void main() {
       expect(wav.channels, hasLength(2));
       expect(wav.frames, 480);
       expect(wav.channels[0], wav.channels[1]);
-      final silent = AudGraph(listen: false, outputChannels: const []);
+      final silent = AudGraphFfi(listen: false, outputChannels: const []);
       addTearDown(silent.dispose);
       silent.start();
       expect(
@@ -105,7 +105,7 @@ void main() {
     });
 
     test('renders the golden oscillator through the filter', () {
-      final graph = AudGraph(
+      final graph = AudGraphFfi(
         listen: false,
         maxFrames: 256,
         outputChannels: const [1],

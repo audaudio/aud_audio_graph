@@ -6,7 +6,7 @@
 
 import 'dart:io';
 
-import 'package:aud_audio_graph/aud_audio_graph.dart';
+import 'package:aud_audio_graph/aud_audio_graph_ffi.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -14,7 +14,7 @@ void main() {
     test('describes an asset of a loaded document', () {
       final dir = Directory.systemTemp.createTempSync('aud_host_asset');
       File('${dir.path}/ir.wav').writeAsStringSync('RIFF');
-      final graph = AudGraph(listen: false, maxFrames: 256);
+      final graph = AudGraphFfi(listen: false, maxFrames: 256);
       final host = AudHost(graph, baseDirectory: dir.path);
       addTearDown(() {
         host.dispose();

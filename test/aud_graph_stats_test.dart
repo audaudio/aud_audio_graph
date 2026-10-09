@@ -4,13 +4,13 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
-import 'package:aud_audio_graph/aud_audio_graph.dart';
+import 'package:aud_audio_graph/aud_audio_graph_ffi.dart';
 import 'package:test/test.dart';
 
 void main() {
   group('AudGraphStats', () {
     test('counts the blocks of an offline render', () {
-      final graph = AudGraph(listen: false, maxFrames: 256);
+      final graph = AudGraphFfi(listen: false, maxFrames: 256);
       addTearDown(graph.dispose);
       final osc = graph.createNode('aud.graph.oscillator');
       graph.transaction((tx) => tx.connect(osc, graph.io));

@@ -4,8 +4,8 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
-import 'package:aud_audio_core/aud_audio_core.dart';
-import 'package:aud_audio_graph/aud_audio_graph.dart';
+import 'package:aud_audio_core/aud_audio_core_ffi.dart';
+import 'package:aud_audio_graph/aud_audio_graph_ffi.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -53,7 +53,7 @@ void main() {
     });
 
     test('reads the transport of a graph', () {
-      final graph = AudGraph(listen: false, maxFrames: 256);
+      final graph = AudGraphFfi(listen: false, maxFrames: 256);
       addTearDown(graph.dispose);
       expect(graph.transportState, const AudTransportState());
       graph.start();

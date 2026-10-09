@@ -4,14 +4,14 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
-import 'package:aud_audio_core/aud_audio_core.dart';
-import 'package:aud_audio_graph/aud_audio_graph.dart';
+import 'package:aud_audio_core/aud_audio_core_ffi.dart';
+import 'package:aud_audio_graph/aud_audio_graph_ffi.dart';
 import 'package:test/test.dart';
 
 void main() {
   group('AudHostParam', () {
     test('describes a parameter of a loaded document', () {
-      final graph = AudGraph(listen: false, maxFrames: 256);
+      final graph = AudGraphFfi(listen: false, maxFrames: 256);
       final host = AudHost(graph);
       addTearDown(() {
         host.dispose();

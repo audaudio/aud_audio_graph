@@ -6,7 +6,7 @@
 
 import 'package:aud_audio_core/aud_audio_core.dart';
 
-import 'aud_audio_graph_bindings_generated.dart' as bindings;
+import 'aud_graph_constants.dart' as bindings;
 import 'aud_graph_state.dart';
 
 // #############################################################################
@@ -15,55 +15,6 @@ import 'aud_graph_state.dart';
 /// the OSC vocabulary of `aud_audio_core` where one exists (osc-001).
 sealed class AudGraphNotification {
   const AudGraphNotification({required this.samplePosition});
-
-  /// A notification from its native struct.
-  factory AudGraphNotification.fromNative(
-    bindings.AudGraphNotification native,
-  ) {
-    final position = native.sample_position;
-    return switch (native.type) {
-      bindings.AUD_NOTIFY_REVISION => AudRevisionAdoptedNotification(
-        revision: native.revision,
-        samplePosition: position,
-      ),
-      bindings.AUD_NOTIFY_STATE => AudStateNotification(
-        state: AudGraphState.fromCode(native.code),
-        samplePosition: position,
-      ),
-      bindings.AUD_NOTIFY_NODE_DONE => AudNodeDoneNotification(
-        node: native.node,
-        samplePosition: position,
-      ),
-      bindings.AUD_NOTIFY_DIAGNOSTIC => AudDiagnosticNotification(
-        code: native.code,
-        count: native.count,
-        node: native.node,
-        value: native.value,
-        samplePosition: position,
-      ),
-      bindings.AUD_NOTIFY_EVENT => AudEventNotification(
-        node: native.node,
-        event: AudEvent.fromNative(native.event),
-        samplePosition: position,
-      ),
-      bindings.AUD_NOTIFY_TRANSPORT => AudTransportNotification(
-        type: AudTransportRequestType.fromCode(native.code),
-        beatTicks: native.value,
-        tempo: native.number,
-        playing: native.count != 0,
-        samplePosition: position,
-      ),
-      bindings.AUD_NOTIFY_TIME_RESET => AudTimeResetNotification(
-        count: native.count,
-        samplePosition: position,
-      ),
-      _ => throw ArgumentError.value(
-        native.type,
-        'type',
-        'Unknown notification',
-      ),
-    };
-  }
 
   // ...........................................................................
   /// The sample position of the block the notification comes from.

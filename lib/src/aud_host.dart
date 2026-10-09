@@ -6,11 +6,11 @@
 
 import 'dart:ffi';
 
-import 'package:aud_audio_core/aud_audio_core.dart';
+import 'package:aud_audio_core/aud_audio_core_ffi.dart';
 import 'package:ffi/ffi.dart';
 
 import 'aud_audio_graph_bindings_generated.dart' as bindings;
-import 'aud_graph.dart';
+import 'aud_graph_ffi.dart';
 import 'aud_graph_document.dart';
 import 'aud_graph_exception.dart';
 import 'aud_host_asset.dart';
@@ -79,7 +79,7 @@ class AudHost {
 
   // ...........................................................................
   /// The graph the host loads documents into.
-  final AudGraph graph;
+  final AudGraphFfi graph;
 
   /// The directory relative asset paths resolve against.
   final String? baseDirectory;

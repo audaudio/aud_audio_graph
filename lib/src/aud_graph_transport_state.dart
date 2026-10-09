@@ -6,8 +6,6 @@
 
 import 'package:aud_audio_core/aud_audio_core.dart';
 
-import 'aud_audio_graph_bindings_generated.dart' as bindings;
-
 // #############################################################################
 /// The transport as the realtime thread published it last (time-001).
 class AudTransportState {
@@ -22,20 +20,6 @@ class AudTransportState {
     this.loopStartTicks = 0,
     this.loopEndTicks = 0,
   });
-
-  /// The state from its native struct.
-  factory AudTransportState.fromNative(
-    bindings.AudGraphTransportState native,
-  ) => AudTransportState(
-    playing: native.playing != 0,
-    beatTicks: native.beat,
-    tempo: native.tempo,
-    numerator: native.numerator,
-    denominator: native.denominator,
-    looping: native.looping != 0,
-    loopStartTicks: native.loop_start,
-    loopEndTicks: native.loop_end,
-  );
 
   // ...........................................................................
   /// Whether the transport plays.

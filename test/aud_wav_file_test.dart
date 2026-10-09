@@ -7,7 +7,7 @@
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:aud_audio_graph/aud_audio_graph.dart';
+import 'package:aud_audio_graph/aud_audio_graph_ffi.dart';
 import 'package:test/test.dart';
 
 void main() {
