@@ -8,12 +8,12 @@ import 'dart:ffi';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:aud_audio_core/aud_audio_core.dart';
-import 'package:aud_audio_graph/aud_audio_graph.dart';
+import 'package:aud_audio_core/aud_audio_core_ffi.dart';
+import 'package:aud_audio_graph/aud_audio_graph_ffi.dart';
 import 'package:test/test.dart';
 
 void main() {
-  late AudGraph graph;
+  late AudGraphFfi graph;
   late AudHost host;
   late Directory dir;
 
@@ -21,7 +21,7 @@ void main() {
     dir = Directory.systemTemp.createTempSync('aud_host_test');
     File('${dir.path}/ir.wav').writeAsStringSync('RIFF');
     File('${dir.path}/other.wav').writeAsStringSync('RIFF');
-    graph = AudGraph(listen: false, maxFrames: 256);
+    graph = AudGraphFfi(listen: false, maxFrames: 256);
     host = AudHost(graph, baseDirectory: dir.path);
   });
   tearDown(() {
@@ -167,7 +167,7 @@ void main() {
       final gain = saved.nodes.firstWhere((n) => n.id == 'gain').preset!;
       expect(gain.params, {'gain': 0.5});
       expect(gain.state, gainState(0.5));
-      final other = AudGraph(listen: false, maxFrames: 256);
+      final other = AudGraphFfi(listen: false, maxFrames: 256);
       final second = AudHost(other, baseDirectory: dir.path);
       addTearDown(() {
         second.dispose();

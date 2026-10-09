@@ -4,7 +4,7 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
-import 'package:aud_audio_graph/aud_audio_graph.dart';
+import 'package:aud_audio_graph/aud_audio_graph_ffi.dart';
 import 'package:flutter/material.dart';
 
 void main() {
@@ -22,7 +22,10 @@ class AudGraphExampleApp extends StatefulWidget {
 }
 
 class _AudGraphExampleAppState extends State<AudGraphExampleApp> {
-  final AudGraph _graph = AudGraph(maxFrames: 256, outputChannels: const [1]);
+  final AudGraphFfi _graph = AudGraphFfi(
+    maxFrames: 256,
+    outputChannels: const [1],
+  );
   late final _types = _graph.nodeTypes;
   late final double _peak = _renderPeak();
 

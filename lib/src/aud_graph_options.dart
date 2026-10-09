@@ -4,8 +4,6 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
-import 'aud_audio_graph_bindings_generated.dart' as bindings;
-
 // #############################################################################
 /// The capacities and policies of a graph (decisions interop-002 and
 /// graph-003). Zero takes the default of the engine.
@@ -80,21 +78,6 @@ class AudGraphOptions {
   final bool dropLateEvents;
 
   // ...........................................................................
-  /// Writes the options into a native configuration.
-  void writeTo(bindings.AudGraphConfig config) {
-    config
-      ..flags = dropLateEvents ? bindings.AUD_GRAPH_DROP_LATE_EVENTS : 0
-      ..max_nodes = maxNodes
-      ..max_connections = maxConnections
-      ..param_queue_capacity = paramQueueCapacity
-      ..event_queue_capacity = eventQueueCapacity
-      ..scheduler_capacity = schedulerCapacity
-      ..notification_capacity = notificationCapacity
-      ..max_events_per_block = maxEventsPerBlock
-      ..fade_frames = fadeFrames
-      ..max_tail_frames = maxTailFrames
-      ..lookahead_ns = lookahead.inMicroseconds * 1000;
-  }
 
   /// The options as JSON.
   Map<String, Object?> toJson() => {

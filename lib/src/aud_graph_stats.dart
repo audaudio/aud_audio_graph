@@ -4,7 +4,6 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
-import 'aud_audio_graph_bindings_generated.dart' as bindings;
 import 'aud_graph_state.dart';
 
 // #############################################################################
@@ -30,28 +29,6 @@ class AudGraphStats {
     required this.outputPeak,
     this.realtimeViolations = 0,
   });
-
-  /// The counters from their native struct.
-  factory AudGraphStats.fromNative(bindings.AudGraphStats native) =>
-      AudGraphStats(
-        state: AudGraphState.fromCode(native.state),
-        revision: native.revision,
-        scheduled: native.scheduled,
-        blocksRendered: native.blocks_rendered,
-        framesRendered: native.frames_rendered,
-        renderTimeMaxNs: native.render_time_max_ns,
-        renderTimeSumNs: native.render_time_sum_ns,
-        eventsDelivered: native.events_delivered,
-        eventsLate: native.events_late,
-        eventsDropped: native.events_dropped,
-        paramsApplied: native.params_applied,
-        rejected: native.rejected,
-        notificationsDropped: native.notifications_dropped,
-        overloads: native.overloads,
-        timeFilterResets: native.time_filter_resets,
-        outputPeak: native.output_peak,
-        realtimeViolations: native.realtime_violations,
-      );
 
   // ...........................................................................
   /// The lifecycle state.

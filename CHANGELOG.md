@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0 - 2026-10-09
+
+### Changed
+
+- Split the Dart API into neutral and ffi parts
+- Describe the neutral and ffi APIs in the README
+
 ## 0.3.0 - 2026-10-09
 
 ### Added

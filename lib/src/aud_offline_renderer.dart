@@ -11,7 +11,7 @@ import 'package:aud_audio_core/aud_audio_core_bindings.dart' as core;
 import 'package:ffi/ffi.dart';
 
 import 'aud_audio_graph_bindings_generated.dart' as bindings;
-import 'aud_graph.dart';
+import 'aud_graph_ffi.dart';
 import 'aud_graph_exception.dart';
 import 'aud_wav_file.dart';
 
@@ -25,7 +25,7 @@ class AudOfflineRenderer {
   const AudOfflineRenderer(this.graph);
 
   /// The graph; it has to be running.
-  final AudGraph graph;
+  final AudGraphFfi graph;
 
   // ...........................................................................
   /// Renders [frames] frames and returns the output buses, one list of

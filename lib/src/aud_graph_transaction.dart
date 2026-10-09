@@ -4,7 +4,6 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
-import 'aud_audio_graph_bindings_generated.dart' as bindings;
 import 'aud_graph.dart';
 import 'aud_graph_exception.dart';
 import 'aud_graph_node.dart';
@@ -45,16 +44,46 @@ enum AudEditKind {
 typedef AudEdit = ({AudEditKind kind, Object what});
 
 // #############################################################################
+/// The engine side of a transaction: applies one edit and returns its result
+/// code; the native graph implements it over its C API.
+abstract interface class AudGraphEdits {
+  /// Connects output bus [fromBus] of [from] to input bus [toBus] of [to].
+  int connect(
+    int from,
+    int fromBus,
+    int to,
+    int toBus, {
+    required bool lowLatency,
+  });
+
+  /// Removes an audio connection.
+  int disconnect(int from, int fromBus, int to, int toBus);
+
+  /// Connects event output [fromPort] of [from] to event input [toPort] of
+  /// [to].
+  int connectEvents(int from, int fromPort, int to, int toPort);
+
+  /// Removes an event connection.
+  int disconnectEvents(int from, int fromPort, int to, int toPort);
+
+  /// Removes the node with [handle].
+  int remove(int handle);
+}
+
+// #############################################################################
 /// The edits of one transaction (graph-003): `AudGraph.transaction` opens
 /// it, hands it to the edits and commits it; every edit goes to the engine
 /// at once and is checked there, the commit compiles them into one
 /// program.
 class AudGraphTransaction {
-  /// Creates the transaction of [graph]; `AudGraph.transaction` does this.
-  AudGraphTransaction(this.graph);
+  /// Creates the transaction of [graph] applying its edits through [edits];
+  /// `AudGraph.transaction` does this.
+  AudGraphTransaction(this.graph, AudGraphEdits edits) : _edits = edits;
 
   /// The graph.
   final AudGraph graph;
+
+  final AudGraphEdits _edits;
 
   /// The audio connections added.
   final List<AudConnection> connected = [];
@@ -86,13 +115,12 @@ class AudGraphTransaction {
     bool lowLatency = false,
   }) {
     AudGraphException.check(
-      bindings.aud_graph_connect(
-        graph.pointer,
+      _edits.connect(
         from.handle,
         fromBus,
         to.handle,
         toBus,
-        lowLatency ? bindings.AUD_CONNECTION_LOW_LATENCY : 0,
+        lowLatency: lowLatency,
       ),
       'connect ${from.name}:$fromBus to ${to.name}:$toBus',
     );
@@ -110,13 +138,7 @@ class AudGraphTransaction {
   /// Removes an audio connection.
   void disconnect(AudNode from, AudNode to, {int fromBus = 0, int toBus = 0}) {
     AudGraphException.check(
-      bindings.aud_graph_disconnect(
-        graph.pointer,
-        from.handle,
-        fromBus,
-        to.handle,
-        toBus,
-      ),
+      _edits.disconnect(from.handle, fromBus, to.handle, toBus),
       'disconnect ${from.name}:$fromBus from ${to.name}:$toBus',
     );
     final connection = (
@@ -138,13 +160,7 @@ class AudGraphTransaction {
     int toPort = 0,
   }) {
     AudGraphException.check(
-      bindings.aud_graph_connect_events(
-        graph.pointer,
-        from.handle,
-        fromPort,
-        to.handle,
-        toPort,
-      ),
+      _edits.connectEvents(from.handle, fromPort, to.handle, toPort),
       'connect events of ${from.name}:$fromPort to ${to.name}:$toPort',
     );
     final connection = (
@@ -165,13 +181,7 @@ class AudGraphTransaction {
     int toPort = 0,
   }) {
     AudGraphException.check(
-      bindings.aud_graph_disconnect_events(
-        graph.pointer,
-        from.handle,
-        fromPort,
-        to.handle,
-        toPort,
-      ),
+      _edits.disconnectEvents(from.handle, fromPort, to.handle, toPort),
       'disconnect events of ${from.name}:$fromPort from ${to.name}:$toPort',
     );
     final connection = (
@@ -187,10 +197,7 @@ class AudGraphTransaction {
   /// Removes [node] with its connections; the instance retires at the
   /// commit and is freed once its fade or tail has passed.
   void remove(AudNode node) {
-    AudGraphException.check(
-      bindings.aud_graph_remove_node(graph.pointer, node.handle),
-      'remove ${node.name}',
-    );
+    AudGraphException.check(_edits.remove(node.handle), 'remove ${node.name}');
     removed.add(node);
     edits.add((kind: AudEditKind.remove, what: node));
   }

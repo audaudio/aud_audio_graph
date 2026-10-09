@@ -4,7 +4,7 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
-import 'aud_audio_graph_bindings_generated.dart' as bindings;
+import 'aud_graph_constants.dart' as bindings;
 
 // #############################################################################
 /// The lifecycle states of a graph (decision lifecycle-001).

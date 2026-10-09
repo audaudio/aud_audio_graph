@@ -6,8 +6,8 @@
 
 import 'dart:ffi';
 
-import 'package:aud_audio_core/aud_audio_core.dart';
-import 'package:aud_audio_graph/aud_audio_graph.dart';
+import 'package:aud_audio_core/aud_audio_core_ffi.dart';
+import 'package:aud_audio_graph/aud_audio_graph_ffi.dart';
 import 'package:aud_audio_graph/src/aud_audio_graph_bindings_generated.dart'
     as bindings;
 import 'package:ffi/ffi.dart';
@@ -137,7 +137,7 @@ void main() {
     });
 
     test('the C API refuses short structs and bad arguments', () {
-      final graph = AudGraph(listen: false);
+      final graph = AudGraphFfi(listen: false);
       addTearDown(graph.dispose);
       final stats = calloc<bindings.AudGraphStats>();
       final state = calloc<bindings.AudGraphTransportState>();

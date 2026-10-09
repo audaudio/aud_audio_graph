@@ -4,16 +4,16 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
-import 'package:aud_audio_graph/aud_audio_graph.dart';
+import 'package:aud_audio_graph/aud_audio_graph_ffi.dart';
 import 'package:test/test.dart';
 
 void main() {
-  late AudGraph graph;
+  late AudGraphFfi graph;
   late AudNode osc;
   late AudNode filter;
 
   setUp(() {
-    graph = AudGraph(listen: false, maxFrames: 256);
+    graph = AudGraphFfi(listen: false, maxFrames: 256);
     osc = graph.createNode('aud.graph.oscillator', name: 'osc');
     filter = graph.createNode('aud.graph.filter', name: 'filter');
   });
