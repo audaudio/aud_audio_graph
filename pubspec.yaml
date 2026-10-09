@@ -1,6 +1,6 @@
 name: aud_audio_graph
 description: "Audio graph engine of the Audanika Audio Engine: C++ render programs, scheduler, transport, headless host; Dart graph API"
-version: 0.2.0
+version: 0.3.0
 publish_to: none
 homepage: https://github.com/audaudio/aud_audio_graph
 repository: https://github.com/audaudio/aud_audio_graph
