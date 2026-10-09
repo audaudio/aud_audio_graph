@@ -37,6 +37,8 @@ void main() {
       expect(stats.overloads, 0);
       expect(stats.timeFilterResets, 0);
       expect(stats.outputPeak, closeTo(0.5, 0.01));
+      expect(stats.realtimeViolations, 0);
+      expect(stats.toJson()['realtimeViolations'], 0);
       expect(stats.toJson()['blocksRendered'], 4);
       expect(stats.toString(), contains('framesRendered: 1000'));
       graph.resetStats();

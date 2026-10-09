@@ -5,6 +5,7 @@
 // found in the LICENSE file in the root of this package.
 
 import 'dart:ffi';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:aud_audio_core/aud_audio_core.dart';
@@ -571,6 +572,176 @@ void main() {
       expect(() => graph.tapMeter(osc), throwsA(isA<AudGraphException>()));
     });
 
+    group('state, tail and assets', () {
+      Uint8List gainState(double gain) =>
+          Uint8List(4)..buffer.asByteData().setFloat32(0, gain, Endian.host);
+
+      double gainOf(Uint8List state) =>
+          ByteData.sublistView(state).getFloat32(0, Endian.host);
+
+      AudNode gain() => graph.createNode(
+        'aud.core.gain',
+        name: 'gain',
+        inputChannels: const [1],
+        outputChannels: const [1],
+      );
+
+      test('saveState(node) and loadState(node, data) move a state blob', () {
+        final g = gain();
+        graph.setParam(g, 'gain', 0.25);
+        final state = graph.saveState(g);
+        expect(state, hasLength(4));
+        expect(gainOf(state), 0.25);
+        graph.loadState(g, gainState(0.5));
+        expect(graph.saveState(g), gainState(0.5));
+        expect(
+          () => graph.loadState(g, gainState(0.5), version: 9),
+          throwsA(
+            isA<AudGraphException>().having(
+              (e) => e.code,
+              'code',
+              AUD_ERROR_STATE_VERSION,
+            ),
+          ),
+        );
+        final osc = oscillator();
+        expect(
+          () => graph.saveState(osc),
+          throwsA(
+            isA<AudGraphException>().having(
+              (e) => e.code,
+              'code',
+              AUD_ERROR_UNSUPPORTED,
+            ),
+          ),
+        );
+        // Running, the node is parked for the call.
+        graph.transaction((tx) {
+          tx.connect(osc, g);
+          tx.connect(g, graph.io);
+        });
+        graph.start();
+        render(256);
+        graph.loadState(g, state);
+        expect(graph.saveState(g), state);
+      });
+
+      test('presets apply strings, then the state, then parameters', () {
+        final g = gain();
+        graph.applyPreset(
+          g,
+          AudNodePreset(
+            typeId: 'aud.core.gain',
+            params: const {'gain': 0.75},
+            state: gainState(0.5),
+            stateVersion: 1,
+          ),
+        );
+        // The parameter comes last: it wins over the gain in the state.
+        expect(gainOf(graph.saveState(g)), 0.75);
+        graph.applyPreset(
+          g,
+          AudNodePreset(
+            typeId: 'aud.core.gain',
+            state: gainState(0.5),
+            stateVersion: 1,
+          ),
+        );
+        expect(gainOf(graph.saveState(g)), 0.5);
+      });
+
+      test('documents carry the state blobs of the nodes', () {
+        graph.createNode(
+          'aud.core.gain',
+          name: 'gain',
+          inputChannels: const [1],
+          outputChannels: const [1],
+          preset: const AudNodePreset(
+            typeId: 'aud.core.gain',
+            params: {'gain': 0.5},
+          ),
+        );
+        final document = graph.toDocument();
+        final preset = document.nodes.single.preset!;
+        expect(preset.stateVersion, 1);
+        expect(gainOf(preset.state!), 0.5);
+        final bare = graph.toDocument(includeState: false);
+        expect(bare.nodes.single.preset!.state, isNull);
+        expect(bare.nodes.single.preset!.stateVersion, isNull);
+        final copy = AudGraph.fromDocument(
+          document,
+          maxFrames: 256,
+          listen: false,
+        );
+        addTearDown(copy.dispose);
+        expect(copy.toDocument(), document);
+      });
+
+      test('outputTail reports the tail of the program', () {
+        expect(graph.outputTail, 0);
+        final feedback = graph.createNode(
+          'aud.graph.feedback',
+          inputChannels: const [1],
+          outputChannels: const [1],
+          delayFrames: 512,
+        );
+        final osc = oscillator();
+        graph.transaction((tx) {
+          tx.connect(osc, feedback);
+          tx.connect(feedback, graph.io);
+        });
+        expect(graph.outputTail, 512);
+        expect(AudGraph.infiniteTail, 0xFFFFFFFF);
+      });
+
+      test('assets resolve against a base directory', () {
+        final dir = Directory.systemTemp.createTempSync('aud_graph_assets');
+        addTearDown(() => dir.deleteSync(recursive: true));
+        File('${dir.path}/a.sfz').writeAsStringSync('x');
+        const asset = AudGraphAsset(id: 'a', path: 'a.sfz');
+        graph.addAsset(asset, baseDirectory: dir.path);
+        expect(graph.assets, [asset]);
+        expect(
+          graph.assetPath('a'),
+          '${dir.path}${Platform.pathSeparator}a.sfz',
+        );
+        expect(graph.assetPath('b'), isNull);
+        // An absolute path stays as it is.
+        graph.addAsset(
+          AudGraphAsset(id: 'abs', path: '${dir.path}/a.sfz'),
+          baseDirectory: '/elsewhere',
+        );
+        expect(graph.assetPath('abs'), '${dir.path}/a.sfz');
+        expect(
+          () =>
+              graph.addAsset(const AudGraphAsset(id: 'm', path: 'missing.sfz')),
+          throwsA(
+            isA<ArgumentError>().having(
+              (e) => e.message,
+              'message',
+              contains('Asset m not found'),
+            ),
+          ),
+        );
+        // A document brings its assets along.
+        final copy = AudGraph.fromDocument(
+          const AudGraphDocument(outputChannels: [1], assets: [asset]),
+          maxFrames: 256,
+          listen: false,
+          baseDirectory: dir.path,
+        );
+        addTearDown(copy.dispose);
+        expect(copy.assets, [asset]);
+        expect(copy.toDocument().assets, [asset]);
+      });
+
+      test('the watchdog is off in a build without the user define', () {
+        expect(AudGraph.watchdogEnabled, isFalse);
+        AudGraph.resetWatchdog();
+        expect(AudGraph.watchdogViolations, 0);
+      });
+    });
+
     group('documents', () {
       test('round trip through a document', () {
         final osc = graph.createNode(
@@ -766,6 +937,70 @@ class DartStringNode {
 
 void stringNodeTests() {
   group('AudGraph with a Dart node type', () {
+    test('resolves asset references and keeps them in documents', () {
+      final graph = AudGraph(listen: false, maxFrames: 256);
+      final type = DartStringNode(graph.hostApi);
+      final dir = Directory.systemTemp.createTempSync('aud_graph_strings');
+      addTearDown(() {
+        graph.dispose();
+        type.dispose();
+        dir.deleteSync(recursive: true);
+      });
+      File('${dir.path}/b.sfz').writeAsStringSync('x');
+      DartStringNode.received.clear();
+      const document = AudGraphDocument(
+        assets: [AudGraphAsset(id: 'b', path: 'b.sfz')],
+        nodes: [
+          AudGraphDocumentNode(
+            id: 's',
+            typeId: 'aud.test.strings',
+            preset: AudNodePreset(
+              typeId: 'aud.test.strings',
+              strings: {'file': 'asset:b'},
+            ),
+          ),
+        ],
+      );
+      final nodes = graph.load(document, baseDirectory: dir.path);
+      final node = nodes['s']!;
+      expect(DartStringNode.received, [
+        '7=${dir.path}${Platform.pathSeparator}b.sfz',
+      ]);
+      expect(graph.stringsOf(node), {'file': 'asset:b'});
+      final saved = graph.toDocument();
+      expect(saved.assets, document.assets);
+      expect(saved.nodes.single.preset?.strings, {'file': 'asset:b'});
+      expect(
+        () => graph.setString(node, 'file', 'asset:nope'),
+        throwsArgumentError,
+      );
+      expect(
+        () => graph.applyPreset(
+          node,
+          const AudNodePreset(
+            typeId: 'aud.test.strings',
+            strings: {'file': 'asset:nope'},
+          ),
+        ),
+        throwsA(
+          isA<ArgumentError>().having(
+            (e) => e.message,
+            'message',
+            contains('unknown asset nope'),
+          ),
+        ),
+      );
+      expect(
+        () => graph.load(
+          const AudGraphDocument(
+            assets: [AudGraphAsset(id: 'x', path: 'nowhere.wav')],
+          ),
+          baseDirectory: dir.path,
+        ),
+        throwsArgumentError,
+      );
+    });
+
     test('applies string settings from presets, calls and commands', () {
       final graph = AudGraph(listen: false, maxFrames: 256);
       final type = DartStringNode(graph.hostApi);

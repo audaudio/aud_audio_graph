@@ -171,17 +171,23 @@ final class AudDiagnosticNotification extends AudGraphNotification {
   /// A value: the render time in nanoseconds of an overload.
   final int value;
 
-  /// The name of the code, e.g. `AUD_ERROR_LATE`.
-  String get name => AudAbi.resultName(code);
+  /// The name of the code, e.g. `AUD_ERROR_LATE`; the graph's own codes
+  /// included.
+  String get name => code == bindings.AUD_GRAPH_ERROR_REALTIME_VIOLATION
+      ? 'AUD_GRAPH_ERROR_REALTIME_VIOLATION'
+      : AudAbi.resultName(code);
 
   /// What happened, in words.
   String get message => switch (code) {
     AUD_ERROR_LATE => 'events arrived late',
     AUD_ERROR_RETIRED => 'events of a retired node were dropped',
     AUD_ERROR_QUEUE_FULL => 'entries were dropped: a capacity was exceeded',
-    AUD_ERROR_CAPACITY => 'the scheduler or a note tracker was full',
+    AUD_ERROR_CAPACITY => 'a note tracker was full: note ons were dropped',
+    AUD_ERROR_STATE => 'a node is parked for its state: its events wait',
     AUD_ERROR_OVERLOAD => 'the block took $value ns, longer than it lasts',
     AUD_ERROR_UNSUPPORTED => 'the transport refused a request',
+    bindings.AUD_GRAPH_ERROR_REALTIME_VIOLATION =>
+      'the realtime thread allocated, freed or logged',
     _ => name,
   };
 

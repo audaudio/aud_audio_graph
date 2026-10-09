@@ -46,6 +46,10 @@ type-map:
       lib: core
       c-type: AudAudioBus
       dart-type: AudAudioBus
+    AudParamDescriptor:
+      lib: core
+      c-type: AudParamDescriptor
+      dart-type: AudParamDescriptor
 preamble: |
   // @license
   // Copyright (c) Audanika. All Rights Reserved.

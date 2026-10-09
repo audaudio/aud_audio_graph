@@ -21,6 +21,7 @@
 
 #include "aud_clock.h"
 #include "aud_graph_internal.hpp"
+#include "aud_graph_watchdog.hpp"
 #include "aud_transport.h"
 
 #ifdef __ANDROID__
@@ -116,6 +117,22 @@ int32_t hostRegisterNodeType(void* host, const AudNodeDescriptor* d) {
       d->vtable == nullptr) {
     return AUD_ERROR_INVALID_ARGUMENT;
   }
+  // The arrays a count names exist, and the ids the host and the documents
+  // look parameters and string keys up by are set (ticket 20).
+  if ((d->num_input_buses > 0 && d->input_buses == nullptr) ||
+      (d->num_output_buses > 0 && d->output_buses == nullptr) ||
+      (d->num_event_inputs > 0 && d->event_inputs == nullptr) ||
+      (d->num_event_outputs > 0 && d->event_outputs == nullptr) ||
+      (d->num_params > 0 && d->params == nullptr) ||
+      (d->num_string_keys > 0 && d->string_keys == nullptr)) {
+    return AUD_ERROR_INVALID_ARGUMENT;
+  }
+  for (uint32_t i = 0; i < d->num_params; ++i) {
+    if (d->params[i].id == nullptr) return AUD_ERROR_INVALID_ARGUMENT;
+  }
+  for (uint32_t i = 0; i < d->num_string_keys; ++i) {
+    if (d->string_keys[i].id == nullptr) return AUD_ERROR_INVALID_ARGUMENT;
+  }
   const AudNodeVTable* vtable = d->vtable;
   if (vtable->struct_size < sizeof(AudNodeVTable) || vtable->create == nullptr ||
       vtable->destroy == nullptr || vtable->prepare == nullptr ||
@@ -155,11 +172,18 @@ int32_t hostRegisterTransportProvider(void* host, const char* id,
   return AUD_OK;
 }
 
-void* hostAlloc(void*, size_t bytes) { return std::malloc(bytes); }
+void* hostAlloc(void*, size_t bytes) {
+  watchdogCheck(AUD_GRAPH_VIOLATION_ALLOC);
+  return std::malloc(bytes);
+}
 
-void hostFree(void*, void* memory) { std::free(memory); }
+void hostFree(void*, void* memory) {
+  watchdogCheck(AUD_GRAPH_VIOLATION_FREE);
+  std::free(memory);
+}
 
 void hostLog(void*, int32_t level, const char* message) {
+  watchdogCheck(AUD_GRAPH_VIOLATION_LOG);
 #ifdef __ANDROID__
   __android_log_print(
       level >= AUD_LOG_ERROR ? ANDROID_LOG_ERROR : ANDROID_LOG_INFO, "aud_audio",
@@ -253,6 +277,7 @@ void publish(AudGraph* graph, Program* program) {
   program->revision = graph->nextRevision++;
   graph->hasProgram = true;
   graph->outputLatency = program->outputLatency;
+  graph->outputTail = program->outputTail;
   for (ProgramNode& node : program->nodes) {
     if (!node.instance->retired) node.instance->committed = true;
   }
@@ -280,6 +305,46 @@ void waitForRender(AudGraph* graph) {
 
 bool isLive(const NodeInstance* instance) {
   return instance != nullptr && !instance->retired;
+}
+
+// Runs an [offline] call of the ABI on an instance (ticket 20): while the
+// graph runs and a program contains the instance, the instance is parked
+// first - the realtime thread skips it from the next block on - and the
+// render in flight is waited for, so the call never overlaps a process
+// call. The flag and the handshake are sequentially consistent, like the
+// state and the in-flight flag they follow.
+template <class Call>
+int32_t withNodeParked(AudGraph* graph, NodeInstance* instance, Call call) {
+  if (graph->state.load(std::memory_order_seq_cst) != AUD_GRAPH_RUNNING ||
+      !instance->committed) {
+    return call();
+  }
+  instance->parked.store(true, std::memory_order_seq_cst);
+  waitForRender(graph);
+  const int32_t result = call();
+  instance->parked.store(false, std::memory_order_seq_cst);
+  return result;
+}
+
+// The checks the state calls share; NULL with the error written.
+NodeInstance* stateInstance(AudGraph* graph, int32_t node, int32_t* error) {
+  NodeInstance* instance = instanceOf(graph, node);
+  if (instance == nullptr) {
+    *error = AUD_ERROR_NOT_FOUND;
+    return nullptr;
+  }
+  if (instance->retired) {
+    *error = AUD_ERROR_RETIRED;
+    return nullptr;
+  }
+  const AudNodeDescriptor* d = instance->descriptor;
+  if ((d->capabilities & AUD_NODE_CAP_STATE) == 0 ||
+      instance->instance == nullptr || d->vtable->save_state == nullptr ||
+      d->vtable->load_state == nullptr) {
+    *error = AUD_ERROR_UNSUPPORTED;
+    return nullptr;
+  }
+  return instance;
 }
 
 // Pushes a command into the event queue with the next sequence number; a
@@ -313,8 +378,12 @@ int32_t prepareInstance(AudGraph* graph, NodeInstance* instance) {
     TapState& tap = instance->tap;
     tap.channels = instance->inputChannels[0];
     tap.ringFrames = std::max(maxFrames * 2, kMinTapRingFrames);
-    tap.ring.assign(static_cast<size_t>(tap.ringFrames) * tap.channels, 0.0f);
-    tap.writePos = 0;
+    const size_t samples = static_cast<size_t>(tap.ringFrames) * tap.channels;
+    tap.ring.reset(new std::atomic<float>[samples]);
+    for (size_t i = 0; i < samples; ++i) {
+      tap.ring[i].store(0.0f, std::memory_order_relaxed);
+    }
+    tap.writePos.store(0, std::memory_order_relaxed);
     for (uint32_t c = 0; c < kMaxChannels; ++c) {
       tap.peak[c].store(0, std::memory_order_relaxed);
       tap.rms[c].store(0, std::memory_order_relaxed);
@@ -604,9 +673,12 @@ AUD_EXPORT AudGraph* aud_graph_create(const AudGraphConfig* config) {
       c.notification_capacity);
   graph->scheduler.init(c.scheduler_capacity);
   graph->popped.resize(c.max_events_per_block);
-  graph->blockEvents.resize(c.max_events_per_block + NoteTracker::kCapacity);
+  // The block's events: a budget of queued events, a budget of scheduled
+  // ones and the note offs of one full tracker.
+  graph->blockEvents.resize(2 * c.max_events_per_block + NoteTracker::kCapacity);
   graph->emitted.resize(c.max_events_per_block);
   graph->nodeEvents.resize(graph->blockEvents.size() + graph->emitted.size());
+  graph->deferred.resize(graph->nodeEvents.size());
   graph->nodeRanges.resize(c.max_nodes);
   prepareRealtime(graph);
   resetTransport(graph);
@@ -643,6 +715,8 @@ AUD_EXPORT int32_t aud_graph_prepare(AudGraph* graph, double sample_rate,
   if (state == AUD_GRAPH_RUNNING || state == AUD_GRAPH_DISPOSED) {
     return AUD_ERROR_STATE;
   }
+  // The beat at the current position, computed with the old rate.
+  anchorTransport(graph);
   if (sample_rate > 0) graph->sampleRate = sample_rate;
   if (max_frames > 0) graph->maxFrames = max_frames;
   if (graph->config.fade_frames == 0) {
@@ -658,10 +732,12 @@ AUD_EXPORT int32_t aud_graph_prepare(AudGraph* graph, double sample_rate,
     if (instance->instance != nullptr && instance->descriptor->vtable->reset) {
       instance->descriptor->vtable->reset(instance->instance, AUD_RESET_PREPARE);
     }
-    instance->notes.count = 0;
   }
+  // The tracked notes get their note offs with the first block after the
+  // restart; the transport keeps its position and its pending requests.
+  graph->closeNotesPending = true;
   resetTime(graph);
-  resetTransport(graph);
+  publishTransportState(graph);
   if (graph->hasProgram) {
     const int32_t result = recompile(graph);
     if (result != AUD_OK) return result;
@@ -712,15 +788,18 @@ AUD_EXPORT int32_t aud_graph_stop(AudGraph* graph) {
   }
   graph->state.store(AUD_GRAPH_STOPPED, std::memory_order_seq_cst);
   waitForRender(graph);
-  // No render is in flight: the instances can be reset here.
+  // No render is in flight: the instances can be reset here; their tracked
+  // notes get note offs with the first block after the restart.
   for (auto& instance : graph->instances) {
     if (instance->instance != nullptr && instance->descriptor->vtable->reset) {
       instance->descriptor->vtable->reset(instance->instance, AUD_RESET_STOP);
     }
-    instance->notes.count = 0;
   }
+  graph->closeNotesPending = true;
+  // The transport stops where it is.
+  anchorTransport(graph);
   graph->transport.playing = false;
-  graph->publishedPlaying.store(0, std::memory_order_release);
+  publishTransportState(graph);
   resetTime(graph);
   return AUD_OK;
 }
@@ -864,6 +943,41 @@ AUD_EXPORT int32_t aud_graph_node_lead(AudGraph* graph, int32_t node) {
 AUD_EXPORT int32_t aud_graph_output_latency(AudGraph* graph) {
   return graph == nullptr ? AUD_ERROR_INVALID_ARGUMENT
                           : static_cast<int32_t>(graph->outputLatency);
+}
+
+AUD_EXPORT uint32_t aud_graph_output_tail(AudGraph* graph) {
+  return graph == nullptr ? 0 : graph->outputTail;
+}
+
+AUD_EXPORT int32_t aud_graph_node_save_state(AudGraph* graph, int32_t node,
+                                             void* buffer, size_t capacity,
+                                             size_t* size) {
+  if (graph == nullptr || size == nullptr ||
+      (buffer == nullptr && capacity > 0)) {
+    return AUD_ERROR_INVALID_ARGUMENT;
+  }
+  int32_t error = AUD_OK;
+  NodeInstance* instance = stateInstance(graph, node, &error);
+  if (instance == nullptr) return error;
+  return withNodeParked(graph, instance, [&] {
+    return instance->descriptor->vtable->save_state(instance->instance, buffer,
+                                                    capacity, size);
+  });
+}
+
+AUD_EXPORT int32_t aud_graph_node_load_state(AudGraph* graph, int32_t node,
+                                             const void* data, size_t size,
+                                             uint32_t version) {
+  if (graph == nullptr || (data == nullptr && size > 0)) {
+    return AUD_ERROR_INVALID_ARGUMENT;
+  }
+  int32_t error = AUD_OK;
+  NodeInstance* instance = stateInstance(graph, node, &error);
+  if (instance == nullptr) return error;
+  return withNodeParked(graph, instance, [&] {
+    return instance->descriptor->vtable->load_state(instance->instance, data,
+                                                    size, version);
+  });
 }
 
 // ############################################################################
@@ -1086,14 +1200,24 @@ AUD_EXPORT int32_t aud_graph_send_event(AudGraph* graph, int32_t node,
     command.at = *at;
     const int32_t checked = checkLookahead(graph, at);
     if (checked != AUD_OK) return checked;
-    if (at->domain != AUD_TIME_IMMEDIATE &&
-        graph->scheduledCount.load(std::memory_order_relaxed) >=
-            graph->config.scheduler_capacity) {
+    command.reserved = at->domain != AUD_TIME_IMMEDIATE;
+  }
+  if (command.reserved) {
+    // A place in the scheduler is reserved until the event leaves it, so
+    // that a burst within one block cannot overrun the scheduler. The
+    // realtime thread only gives places back: the check cannot be late.
+    if (graph->schedulerReserved.load(std::memory_order_acquire) >=
+        graph->config.scheduler_capacity) {
       graph->rejected.fetch_add(1, std::memory_order_relaxed);
       return AUD_ERROR_CAPACITY;
     }
+    graph->schedulerReserved.fetch_add(1, std::memory_order_acq_rel);
   }
-  return enqueueCommand(graph, command);
+  const int32_t result = enqueueCommand(graph, command);
+  if (result != AUD_OK && command.reserved) {
+    graph->schedulerReserved.fetch_sub(1, std::memory_order_acq_rel);
+  }
+  return result;
 }
 
 AUD_EXPORT int32_t aud_graph_cancel(AudGraph* graph, int32_t node,
@@ -1204,6 +1328,10 @@ AUD_EXPORT int32_t aud_graph_render(void* user, const AudRenderRequest* request)
   const uint32_t state = graph->state.load(std::memory_order_seq_cst);
   int32_t result = AUD_OK;
   if (state == AUD_GRAPH_RUNNING) {
+    // The watchdog's guard is raised here, outside the nonblocking block
+    // render: on Darwin the first access of a thread-local on a new thread
+    // allocates its storage through dyld, once per thread (ticket 20).
+    WatchdogScope watchdog;
     result = renderBlock(graph, request);
   } else {
     for (uint32_t b = 0; b < request->num_output_buses; ++b) {
@@ -1214,6 +1342,27 @@ AUD_EXPORT int32_t aud_graph_render(void* user, const AudRenderRequest* request)
     }
   }
   graph->inFlight.store(false, std::memory_order_seq_cst);
+  return result;
+}
+
+AUD_EXPORT int32_t aud_graph_render_host(AudGraph* graph,
+                                         AudHostRenderRequest* request) {
+  if (graph == nullptr || request == nullptr ||
+      request->struct_size < sizeof(AudHostRenderRequest) ||
+      request->request == nullptr ||
+      (request->max_output_events > 0 && request->output_events == nullptr)) {
+    return AUD_ERROR_INVALID_ARGUMENT;
+  }
+  request->num_output_events = 0;
+  request->dropped_output_events = 0;
+  // Both fields belong to the rendering thread; aud_graph_render_offline,
+  // the other writer of `offline`, never runs while a stream renders.
+  graph->hostRequest = request;
+  const bool offline = graph->offline;
+  if (request->flags & AUD_PROCESS_OFFLINE) graph->offline = true;
+  const int32_t result = aud_graph_render(graph, request->request);
+  graph->offline = offline;
+  graph->hostRequest = nullptr;
   return result;
 }
 
@@ -1266,12 +1415,13 @@ AUD_EXPORT int32_t aud_graph_tap_read(AudGraph* graph, int32_t node,
   for (uint32_t attempt = 0; attempt < kTapReadAttempts; ++attempt) {
     const uint32_t before = tap.generation.load(std::memory_order_acquire);
     if (before & 1) continue;
-    const uint32_t writePos = tap.writePos;
-    const float* ring = tap.ring.data() + static_cast<size_t>(channel) * tap.ringFrames;
+    const uint32_t writePos = tap.writePos.load(std::memory_order_relaxed);
+    const std::atomic<float>* ring =
+        tap.ring.get() + static_cast<size_t>(channel) * tap.ringFrames;
     for (uint32_t i = 0; i < frames; ++i) {
       const uint32_t position =
           (writePos + tap.ringFrames - frames + i) % tap.ringFrames;
-      out[i] = ring[position];
+      out[i] = ring[position].load(std::memory_order_relaxed);
     }
     std::atomic_thread_fence(std::memory_order_acquire);
     if (tap.generation.load(std::memory_order_acquire) == before) return AUD_OK;
@@ -1319,6 +1469,9 @@ AUD_EXPORT int32_t aud_graph_get_stats(AudGraph* graph, AudGraphStats* stats) {
       graph->filterResets.load(std::memory_order_relaxed);
   stats->reserved = 0;
   stats->output_peak = graph->outputPeak.load(std::memory_order_relaxed);
+  stats->reserved2 = 0;
+  stats->realtime_violations =
+      graph->realtimeViolations.load(std::memory_order_relaxed);
   return AUD_OK;
 }
 
@@ -1337,4 +1490,5 @@ AUD_EXPORT void aud_graph_reset_stats(AudGraph* graph) {
   graph->overloads.store(0, std::memory_order_relaxed);
   graph->filterResets.store(0, std::memory_order_relaxed);
   graph->outputPeak.store(0, std::memory_order_relaxed);
+  graph->realtimeViolations.store(0, std::memory_order_relaxed);
 }

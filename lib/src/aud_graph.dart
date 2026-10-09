@@ -6,6 +6,7 @@
 
 import 'dart:async';
 import 'dart:ffi';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:aud_audio_core/aud_audio_core.dart';
@@ -109,8 +110,8 @@ class AudGraph {
     }
   }
 
-  /// A graph built from [document]: its buses, nodes, connections and
-  /// transport settings; see [load].
+  /// A graph built from [document]: its buses, assets, nodes, connections
+  /// and transport settings; see [load].
   factory AudGraph.fromDocument(
     AudGraphDocument document, {
     double sampleRate = 48000,
@@ -118,6 +119,7 @@ class AudGraph {
     AudGraphOptions options = const AudGraphOptions(),
     int id = 1,
     bool listen = true,
+    String? baseDirectory,
   }) {
     final graph = AudGraph(
       sampleRate: sampleRate,
@@ -129,7 +131,7 @@ class AudGraph {
       listen: listen,
     );
     try {
-      graph.load(document);
+      graph.load(document, baseDirectory: baseDirectory);
     } catch (_) {
       graph.dispose();
       rethrow;
@@ -295,20 +297,115 @@ class AudGraph {
     return node;
   }
 
-  /// Applies the parameters and string settings of [preset] to [node]; the
-  /// state blob waits for the headless host (ticket 20). Throws an
-  /// [ArgumentError] when the preset does not fit the node's type.
+  /// Applies [preset] to [node] in the order of the headless host:
+  /// strings, state, parameters. A string `asset:<id>` reaches the node as
+  /// the path of the asset (see [addAsset]); the state blob loads through
+  /// [loadState]. Throws an [ArgumentError] when the preset does not fit the
+  /// node's type or names an unknown asset.
   void applyPreset(AudNode node, AudNodePreset preset) {
     final problems = preset.validate(node.descriptor);
+    for (final value in preset.strings.values) {
+      final asset = AudGraphAsset.idOf(value);
+      if (asset != null && !_assets.containsKey(asset)) {
+        problems.add('unknown asset $asset');
+      }
+    }
     if (problems.isNotEmpty) {
       throw ArgumentError.value(preset, 'preset', problems.join('; '));
-    }
-    for (final entry in preset.params.entries) {
-      setParam(node, entry.key, entry.value);
     }
     for (final entry in preset.strings.entries) {
       setString(node, entry.key, entry.value);
     }
+    if (preset.state != null) {
+      loadState(node, preset.state!, version: preset.stateVersion);
+    }
+    for (final entry in preset.params.entries) {
+      setParam(node, entry.key, entry.value);
+    }
+  }
+
+  // ...........................................................................
+  // State and assets (plugin-002)
+
+  /// The state blob of [node], whose type saves its state; throws an
+  /// [AudGraphException] otherwise. While the graph runs, the node is
+  /// parked for the call: a block rendered meanwhile skips it.
+  Uint8List saveState(AudNode node) {
+    final size = calloc<Size>();
+    Pointer<Uint8> buffer = nullptr;
+    try {
+      final probe = bindings.aud_graph_node_save_state(
+        _pointer,
+        node.handle,
+        nullptr,
+        0,
+        size,
+      );
+      if (probe != AUD_ERROR_BUFFER_TOO_SMALL) {
+        AudGraphException.check(probe, 'save the state of ${node.name}');
+      }
+      buffer = calloc<Uint8>(size.value + 1);
+      AudGraphException.check(
+        bindings.aud_graph_node_save_state(
+          _pointer,
+          node.handle,
+          buffer.cast(),
+          size.value + 1,
+          size,
+        ),
+        'save the state of ${node.name}',
+      );
+      return Uint8List.fromList(buffer.asTypedList(size.value));
+    } finally {
+      calloc.free(size);
+      if (buffer != nullptr) calloc.free(buffer);
+    }
+  }
+
+  /// Restores the state blob [data] of [node], written by [version] of the
+  /// node's state format - its current one by default; parked like
+  /// [saveState].
+  void loadState(AudNode node, Uint8List data, {int? version}) {
+    final native = calloc<Uint8>(data.length + 1);
+    try {
+      native.asTypedList(data.length).setAll(0, data);
+      AudGraphException.check(
+        bindings.aud_graph_node_load_state(
+          _pointer,
+          node.handle,
+          native.cast(),
+          data.length,
+          version ?? node.descriptor.stateVersion,
+        ),
+        'load the state of ${node.name}',
+      );
+    } finally {
+      calloc.free(native);
+    }
+  }
+
+  /// The files the nodes reference, as [addAsset] added them.
+  List<AudGraphAsset> get assets =>
+      List.unmodifiable([for (final entry in _assets.values) entry.asset]);
+
+  /// The path of the asset [id] on disk, or null for an unknown id.
+  String? assetPath(String id) => _assets[id]?.resolved;
+
+  /// Adds [asset]: its path, resolved against [baseDirectory] (or the
+  /// working directory), must name an existing file; throws an
+  /// [ArgumentError] otherwise. String settings name it `asset:<id>`.
+  void addAsset(AudGraphAsset asset, {String? baseDirectory}) {
+    final resolved = File(asset.path).isAbsolute || baseDirectory == null
+        ? asset.path
+        : '$baseDirectory${Platform.pathSeparator}${asset.path}';
+    if (!File(resolved).existsSync()) {
+      throw ArgumentError.value(
+        asset.path,
+        'asset',
+        'Asset ${asset.id} not found: $resolved',
+      );
+    }
+    _assets[asset.id] = (asset: asset, resolved: resolved);
   }
 
   /// The parameters set from Dart for [node], by id.
@@ -365,6 +462,13 @@ class AudGraph {
   /// The latency of the published program from the graph inputs to the
   /// graph outputs, in frames.
   int get outputLatency => bindings.aud_graph_output_latency(_pointer);
+
+  /// The tail of the published program in frames: the longest node tail
+  /// plus its path to the outputs, [infiniteTail] when a node never ends.
+  int get outputTail => bindings.aud_graph_output_tail(_pointer);
+
+  /// The [outputTail] of a program with a node whose tail never ends.
+  static const int infiniteTail = AUD_TAIL_INFINITE;
 
   /// The latency of [node] in frames.
   int latencyOf(AudNode node) => AudGraphException.check(
@@ -460,10 +564,17 @@ class AudGraph {
   );
 
   /// Applies the string setting [key] (its key or its id) to [node] on the
-  /// calling thread; may block while the node loads.
+  /// calling thread; may block while the node loads. A value `asset:<id>`
+  /// reaches the node as the path of the asset; an unknown asset throws an
+  /// [ArgumentError].
   void setString(AudNode node, Object key, String value) {
     final index = key is int ? key : node.stringKey(key as String);
-    final native = value.toNativeUtf8();
+    final asset = AudGraphAsset.idOf(value);
+    final resolved = asset == null
+        ? value
+        : _assets[asset]?.resolved ??
+              (throw ArgumentError.value(value, 'value', 'Unknown asset'));
+    final native = resolved.toNativeUtf8();
     try {
       AudGraphException.check(
         bindings.aud_graph_set_string(
@@ -702,16 +813,32 @@ class AudGraph {
   /// Zeroes the counters.
   void resetStats() => bindings.aud_graph_reset_stats(_pointer);
 
+  /// Whether the native library carries the debug watchdog of the realtime
+  /// thread: a build hook compiles it in when the app sets the user define
+  /// `watchdog: true` of aud_audio_graph (ticket 20).
+  static bool get watchdogEnabled => bindings.aud_graph_watchdog_enabled() != 0;
+
+  /// The allocations, frees and log calls the watchdog caught on rendering
+  /// threads of the process since [resetWatchdog]; 0 without the watchdog.
+  static int get watchdogViolations => bindings.aud_graph_watchdog_violations();
+
+  /// Zeroes [watchdogViolations].
+  static void resetWatchdog() => bindings.aud_graph_watchdog_reset();
+
   /// The sample position of the next block.
   int get samplePosition => bindings.aud_graph_sample_position(_pointer);
 
   // ...........................................................................
   // Documents
 
-  /// Builds the nodes, connections and transport settings of [document]
-  /// in one transaction and returns the nodes by their ids. The buses of
-  /// the document have to match the graph's.
-  Map<String, AudNode> load(AudGraphDocument document) {
+  /// Builds the assets, nodes, connections and transport settings of
+  /// [document] in one transaction and returns the nodes by their ids. The
+  /// buses of the document have to match the graph's; the asset paths
+  /// resolve against [baseDirectory] (see [addAsset]).
+  Map<String, AudNode> load(
+    AudGraphDocument document, {
+    String? baseDirectory,
+  }) {
     if (document.inputChannels.join(',') != inputChannels.join(',') ||
         document.outputChannels.join(',') != outputChannels.join(',')) {
       throw ArgumentError.value(
@@ -723,6 +850,9 @@ class AudGraph {
     final problems = document.validate();
     if (problems.isNotEmpty) {
       throw ArgumentError.value(document, 'document', problems.join('; '));
+    }
+    for (final asset in document.assets) {
+      addAsset(asset, baseDirectory: baseDirectory);
     }
     final nodes = <String, AudNode>{};
     for (final entry in document.nodes) {
@@ -772,9 +902,11 @@ class AudGraph {
     return nodes;
   }
 
-  /// The graph as a document: the live nodes with the parameters and
-  /// strings set from Dart, the published connections and the transport.
-  AudGraphDocument toDocument({String name = ''}) {
+  /// The graph as a document: the assets, the live nodes with the
+  /// parameters and strings set from Dart and - with [includeState] - the
+  /// state blobs of the nodes that save one, the published connections and
+  /// the transport.
+  AudGraphDocument toDocument({String name = '', bool includeState = true}) {
     String nameOf(int handle) =>
         handle == io.handle ? AudGraphDocument.graphId : _nodes[handle]!.name;
     final t = transportState;
@@ -782,6 +914,7 @@ class AudGraph {
       name: name,
       inputChannels: inputChannels,
       outputChannels: outputChannels,
+      assets: assets,
       nodes: [
         for (final node in _nodes.values)
           AudGraphDocumentNode(
@@ -795,6 +928,12 @@ class AudGraph {
               nodeVersion: node.descriptor.version,
               params: paramsOf(node),
               strings: stringsOf(node),
+              state: includeState && node.descriptor.capabilities.state
+                  ? saveState(node)
+                  : null,
+              stateVersion: includeState && node.descriptor.capabilities.state
+                  ? node.descriptor.stateVersion
+                  : null,
             ),
           ),
       ],
@@ -841,6 +980,7 @@ class AudGraph {
   final Map<int, Map<String, double>> _params = {};
   final Map<int, Map<String, String>> _strings = {};
   final Map<int, int> _delays = {};
+  final Map<String, ({AudGraphAsset asset, String resolved})> _assets = {};
   final List<AudConnection> _connections = [];
   final List<AudEventConnection> _eventConnections = [];
   final List<(int, Completer<void>)> _waiting = [];

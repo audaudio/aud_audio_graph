@@ -69,7 +69,8 @@ void main() {
         AUD_ERROR_LATE: 'events arrived late',
         AUD_ERROR_RETIRED: 'events of a retired node were dropped',
         AUD_ERROR_QUEUE_FULL: 'entries were dropped: a capacity was exceeded',
-        AUD_ERROR_CAPACITY: 'the scheduler or a note tracker was full',
+        AUD_ERROR_CAPACITY: 'a note tracker was full: note ons were dropped',
+        AUD_ERROR_STATE: 'a node is parked for its state: its events wait',
         AUD_ERROR_OVERLOAD: 'the block took 99 ns, longer than it lasts',
         AUD_ERROR_UNSUPPORTED: 'the transport refused a request',
         AUD_ERROR_FAILED: 'AUD_ERROR_FAILED',
@@ -101,6 +102,18 @@ void main() {
           address: '/graph/1/node/7',
         ),
       );
+    });
+
+    test('a realtime violation the watchdog caught', () {
+      native.ref
+        ..code = bindings.AUD_GRAPH_ERROR_REALTIME_VIOLATION
+        ..count = 5
+        ..value = bindings.AUD_GRAPH_VIOLATION_NEW;
+      final n =
+          parse(bindings.AUD_NOTIFY_DIAGNOSTIC) as AudDiagnosticNotification;
+      expect(n.name, 'AUD_GRAPH_ERROR_REALTIME_VIOLATION');
+      expect(n.message, 'the realtime thread allocated, freed or logged');
+      expect(n.toJson()['name'], 'AUD_GRAPH_ERROR_REALTIME_VIOLATION');
     });
 
     test('an event', () {

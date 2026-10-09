@@ -55,6 +55,23 @@ typedef struct AudGraph AudGraph;
 // The id of the internal transport provider.
 #define AUD_GRAPH_INTERNAL_TRANSPORT_ID "aud.graph.transport"
 
+// Result codes of the graph itself. The ABI owns the codes down to -99;
+// the graph's own start at -100 and never cross the ABI.
+enum {
+  // The realtime thread allocated, freed or logged: the debug watchdog
+  // (ticket 20) counted a violation of the realtime contract.
+  AUD_GRAPH_ERROR_REALTIME_VIOLATION = -100,
+};
+
+// What the watchdog caught, OR-ed into `value` of its diagnostic.
+enum {
+  AUD_GRAPH_VIOLATION_NEW = 1 << 0,     // operator new
+  AUD_GRAPH_VIOLATION_DELETE = 1 << 1,  // operator delete
+  AUD_GRAPH_VIOLATION_ALLOC = 1 << 2,   // AudHostApi.alloc
+  AUD_GRAPH_VIOLATION_FREE = 1 << 3,    // AudHostApi.free
+  AUD_GRAPH_VIOLATION_LOG = 1 << 4,     // AudHostApi.log
+};
+
 // The lifecycle states of a graph (lifecycle-001).
 enum {
   AUD_GRAPH_CREATED = 0,
@@ -135,11 +152,17 @@ enum {
   // A diagnostic with the result code `code`, `count` occurrences in the
   // block, for `node` (0 for the graph): AUD_ERROR_LATE (late events
   // played or dropped), AUD_ERROR_RETIRED (events of a retired node
-  // dropped), AUD_ERROR_QUEUE_FULL (block or notification capacity
-  // exceeded, entries dropped), AUD_ERROR_CAPACITY (scheduler or note
-  // tracker full), AUD_ERROR_OVERLOAD (the block took longer than it
-  // lasts; `value` holds the render time in ns), AUD_ERROR_UNSUPPORTED
-  // (the transport refused a request).
+  // dropped), AUD_ERROR_QUEUE_FULL (block, notification or host event
+  // output capacity exceeded, entries dropped), AUD_ERROR_CAPACITY (the
+  // note tracker of `node` - the last one in the block - refused note ons,
+  // which are dropped so that no note stays open), AUD_ERROR_STATE (`node`
+  // is parked for a state call: its events wait for the block after the
+  // call, `count` of them when the park began),
+  // AUD_ERROR_OVERLOAD (the block took longer than it lasts; `value`
+  // holds the render time in ns), AUD_ERROR_UNSUPPORTED (the transport
+  // refused a request), AUD_GRAPH_ERROR_REALTIME_VIOLATION (the watchdog
+  // caught `count` violations; `value` holds the AUD_GRAPH_VIOLATION_*
+  // kinds).
   AUD_NOTIFY_DIAGNOSTIC = 4,
   // `node` emitted `event` into the graph's event input.
   AUD_NOTIFY_EVENT = 5,
@@ -184,6 +207,8 @@ typedef struct AudGraphStats {
   uint32_t time_filter_resets;
   uint32_t reserved;
   float output_peak;  // the largest absolute output sample since the reset
+  uint32_t reserved2;
+  uint64_t realtime_violations;  // what the watchdog caught since the reset
 } AudGraphStats;
 
 // The transport as the realtime thread last saw it.
@@ -216,6 +241,26 @@ typedef struct AudOfflineRequest {
   int64_t start_sample_position;
   int64_t start_host_time_ns;
 } AudOfflineRequest;
+
+// What a host that wants the graph's events hands to one render call
+// (plugin-002, ticket 20): the render request of the ABI and a buffer the
+// engine fills with the events that reached the graph's event input in the
+// block - node 0's input 0, where event connections "to the graph" end -
+// in ascending sample offset. A host that renders through
+// aud_graph_render_host takes these events; rendered through
+// aud_graph_render they reach the control thread as AUD_NOTIFY_EVENT.
+// With AUD_PROCESS_OFFLINE in `flags` the block renders freewheeling: the
+// nodes see the flag and no overload is reported.
+typedef struct AudHostRenderRequest {
+  uint32_t struct_size;
+  uint32_t flags;                   // AUD_PROCESS_*
+  const AudRenderRequest* request;  // the buses, time, events and transport
+  AudEvent* output_events;          // written by the engine
+  uint32_t max_output_events;       // 0: the events stay notifications
+  uint32_t num_output_events;       // written by the engine
+  uint32_t dropped_output_events;   // did not fit; also a diagnostic
+  uint32_t reserved;
+} AudHostRenderRequest;
 
 // Wakes the control thread: notifications wait. Called on the notification
 // thread, never on the realtime thread.
@@ -310,6 +355,32 @@ AUD_EXPORT int32_t aud_graph_node_lead(AudGraph* graph, int32_t node);
 // the graph outputs in frames.
 AUD_EXPORT int32_t aud_graph_output_latency(AudGraph* graph);
 
+// [control] The tail of the published program in frames: the longest
+// node tail plus the path latency from that node to the graph outputs,
+// AUD_TAIL_INFINITE when a contributing node reports an infinite tail.
+// Retired nodes still rendering their tails count until they finish.
+AUD_EXPORT uint32_t aud_graph_output_tail(AudGraph* graph);
+
+// [control] Writes the state of an instance with AUD_NODE_CAP_STATE into
+// `buffer` and its size into `size`; AUD_ERROR_BUFFER_TOO_SMALL with the
+// needed size when `capacity` is too small (`capacity` 0 asks for the
+// size), AUD_ERROR_UNSUPPORTED for a node without state. The ABI tags
+// save_state as [offline]: while the graph runs, the node is parked for
+// the call so that no realtime call of it overlaps - a block rendered
+// meanwhile skips its process call and clears its outputs; its parameter
+// changes, events and transport resets wait for its next block. Not
+// running, the call goes straight through.
+AUD_EXPORT int32_t aud_graph_node_save_state(AudGraph* graph, int32_t node,
+                                             void* buffer, size_t capacity,
+                                             size_t* size);
+
+// [control] Restores a state blob saved by `version` of the node's state
+// format, parked like aud_graph_node_save_state; AUD_ERROR_STATE_VERSION
+// when the node cannot read it.
+AUD_EXPORT int32_t aud_graph_node_load_state(AudGraph* graph, int32_t node,
+                                             const void* data, size_t size,
+                                             uint32_t version);
+
 // ............................................................................
 // Transactions (graph-003)
 
@@ -370,7 +441,9 @@ AUD_EXPORT int32_t aud_graph_set_param(AudGraph* graph, int32_t node,
 // the next block). The event's sample offset is ignored; its port names
 // the event input. An `id` above zero lets the event be cancelled while it
 // waits. AUD_ERROR_LOOKAHEAD beyond the lookahead, AUD_ERROR_CAPACITY when
-// the scheduler is full, AUD_ERROR_STATE for a node that has not been
+// the scheduler is full - an event with a time holds its place from the
+// enqueue until it leaves the scheduler, so a burst within one block
+// cannot overrun it -, AUD_ERROR_STATE for a node that has not been
 // committed, AUD_ERROR_RETIRED for a removed node.
 AUD_EXPORT int32_t aud_graph_send_event(AudGraph* graph, int32_t node,
                                         const AudEvent* event,
@@ -412,6 +485,13 @@ AUD_EXPORT int64_t aud_graph_sample_position(AudGraph* graph);
 // that is not running renders silence and returns AUD_OK.
 AUD_EXPORT int32_t aud_graph_render(void* user, const AudRenderRequest* request);
 
+// [realtime] Renders one block like aud_graph_render and hands the events
+// that reached the graph's event input to the host: the render call of
+// the plugin shells (plugin-002). `num_output_events` and
+// `dropped_output_events` are written before the call returns.
+AUD_EXPORT int32_t aud_graph_render_host(AudGraph* graph,
+                                         AudHostRenderRequest* request);
+
 // [control] Renders offline on the calling thread while no stream renders;
 // the graph has to be running.
 AUD_EXPORT int32_t aud_graph_render_offline(AudGraph* graph,
@@ -448,6 +528,234 @@ AUD_EXPORT int32_t aud_graph_get_stats(AudGraph* graph, AudGraphStats* stats);
 
 // [control] Zeroes the counters; the realtime thread keeps counting.
 AUD_EXPORT void aud_graph_reset_stats(AudGraph* graph);
+
+// ............................................................................
+// The headless host (plugin-002, ticket 20)
+//
+// A host over a graph that works without Dart: it loads a graph document
+// (doc/schemas/aud_graph_document.schema.json with the node presets of
+// aud_node_preset.schema.json of the core) in one transaction, applies the
+// presets, resolves the assets the document references, saves the whole
+// state back as a document and gives the plugin shells what they need:
+// stable parameter ids, latency, tail and the events of the graph per
+// block. Every function is [control] except aud_host_render. A failed call
+// leaves a message in aud_host_last_error.
+//
+// Presets apply in the order strings, state, parameters: the strings load
+// what a node needs, the state blob restores what parameters cannot hold,
+// the parameters come last. The host keeps the value of every parameter -
+// the engine has none to report - and assumes the descriptor's default for
+// one that no preset names; a saved document names them all. A node whose
+// state blob holds parameter values therefore has them overridden by the
+// parameters of the preset.
+//
+// Assets: the document's `assets` table maps an id to a path; a string
+// setting whose value is `asset:<id>` names one. The host resolves the
+// path against its base directory, checks that the file exists before
+// anything is applied and hands the resolved path to the node's
+// set_string, which loads the file. The paths are not confined to the base
+// directory - a sample library lives elsewhere -, so a document names any
+// file the process may read; a host that loads documents it does not trust
+// checks them with aud_host_asset first.
+//
+// Parameter ids: FNV-1a over `<node id>/<parameter id>` with the top bit
+// cleared - 31 bits, as VST3 hosts expect (JUCE clears the same bit), and
+// never the invalid id 0xFFFFFFFF of VST3 and CLAP. A document whose ids
+// collide is refused.
+
+typedef struct AudHost AudHost;
+
+#define AUD_HOST_MAX_BUSES 16
+#define AUD_HOST_MAX_NAME 128
+
+// How a host is created. NULL or zero means the default.
+typedef struct AudHostOptions {
+  uint32_t struct_size;
+  // Relative asset paths resolve against it; NULL leaves them relative to
+  // the working directory.
+  const char* base_directory;
+} AudHostOptions;
+
+// What aud_host_inspect reads from a document without a graph: its buses,
+// so that a shell can create the graph that fits, and its counts.
+typedef struct AudHostDocumentInfo {
+  uint32_t struct_size;
+  uint32_t schema;
+  uint32_t num_input_buses;
+  uint32_t num_output_buses;
+  uint32_t input_channels[AUD_HOST_MAX_BUSES];
+  uint32_t output_channels[AUD_HOST_MAX_BUSES];
+  uint32_t num_nodes;
+  uint32_t num_assets;
+  char name[AUD_HOST_MAX_NAME];
+} AudHostDocumentInfo;
+
+// One parameter of the loaded document. The strings stay valid until the
+// next load.
+typedef struct AudHostParam {
+  uint32_t struct_size;
+  uint32_t id;     // the stable id
+  int32_t node;    // the node handle
+  uint32_t index;  // the index in the node's descriptor
+  const char* node_id;
+  const char* param_id;
+  const AudParamDescriptor* descriptor;
+  float value;  // the current value as the host set it
+} AudHostParam;
+
+// One asset of the loaded document. The strings stay valid until the next
+// load or aud_host_set_asset_path.
+typedef struct AudHostAsset {
+  uint32_t struct_size;
+  uint32_t exists;       // whether the file was found at the last check
+  const char* id;
+  const char* path;      // as the document names it
+  const char* resolved;  // what the nodes receive
+} AudHostAsset;
+
+// [control] Creates a host over a graph; the host never destroys the
+// graph. NULL for an invalid argument.
+AUD_EXPORT AudHost* aud_host_create(AudGraph* graph,
+                                    const AudHostOptions* options);
+
+// [control] Destroys the host; the graph and its nodes stay.
+AUD_EXPORT void aud_host_destroy(AudHost* host);
+
+// [control] The graph of the host.
+AUD_EXPORT AudGraph* aud_host_graph(AudHost* host);
+
+// [control] What the last failed call of the host complained about, or an
+// empty string; valid until the next call.
+AUD_EXPORT const char* aud_host_last_error(AudHost* host);
+
+// [control] Reads the buses, the counts and the name of a document text
+// without a graph; AUD_ERROR_INVALID_ARGUMENT for text that is no
+// document, AUD_ERROR_CAPACITY for more buses than the info holds.
+AUD_EXPORT int32_t aud_host_inspect(const char* json, size_t length,
+                                    AudHostDocumentInfo* info);
+
+// [control] Loads a document: validates all of it - the schema, the types
+// registered with the graph, the ids, the buses against the graph's, the
+// parameters and string keys, the state versions, the assets on disk, the
+// parameter ids - and only then creates the nodes, applies their presets
+// and connects them in one transaction while the nodes of the previous
+// document retire. On an error nothing of the document is applied; the
+// error code names the first problem and aud_host_last_error says which.
+// The transport settings are sent after the commit: AUD_ERROR_QUEUE_FULL
+// then means the document is loaded but the event queue refused them.
+AUD_EXPORT int32_t aud_host_load(AudHost* host, const char* json,
+                                 size_t length);
+
+// [control] Writes the loaded document with the current state - the
+// parameters, the string settings, the state blobs of the nodes and the
+// asset table - as JSON text into `buffer` and its length into `size`;
+// AUD_ERROR_BUFFER_TOO_SMALL with the needed length when `capacity` is
+// smaller than the length plus the terminator. The connections are those
+// of the loaded document; edits made on the graph directly are not part
+// of it.
+AUD_EXPORT int32_t aud_host_save(AudHost* host, char* buffer, size_t capacity,
+                                 size_t* size);
+
+// [control] The nodes of the loaded document, and the handle of the node at
+// `index` in document order (AUD_ERROR_NOT_FOUND beyond them).
+AUD_EXPORT int32_t aud_host_num_nodes(AudHost* host);
+AUD_EXPORT int32_t aud_host_node_at(AudHost* host, uint32_t index);
+
+// [control] The handle of the node `id` of the loaded document, or
+// AUD_ERROR_NOT_FOUND.
+AUD_EXPORT int32_t aud_host_node(AudHost* host, const char* id);
+
+// [control] The document id of a node handle; NULL for a handle the
+// document does not know.
+AUD_EXPORT const char* aud_host_node_id(AudHost* host, int32_t node);
+
+// [control] Applies a node preset (JSON of aud_node_preset.schema.json) to
+// the node `node_id`: the strings on the calling thread, the state blob
+// through the node park, the parameters through the queue. A preset the
+// validation refuses changes nothing; a part the node or a full queue
+// refuses while it is applied stops it there - the parts before stay, and
+// the host's table holds what the node has.
+AUD_EXPORT int32_t aud_host_apply_preset(AudHost* host, const char* node_id,
+                                         const char* json, size_t length);
+
+// [control] Writes the preset of the node `node_id` with its current
+// parameters, strings and state as JSON text, like aud_host_save.
+AUD_EXPORT int32_t aud_host_node_preset(AudHost* host, const char* node_id,
+                                        char* buffer, size_t capacity,
+                                        size_t* size);
+
+// [control] The parameters of the loaded document, ordered by id.
+AUD_EXPORT int32_t aud_host_num_params(AudHost* host);
+AUD_EXPORT int32_t aud_host_param(AudHost* host, uint32_t index,
+                                  AudHostParam* out);
+
+// [control] The index of the parameter with the stable `id`, or
+// AUD_ERROR_NOT_FOUND.
+AUD_EXPORT int32_t aud_host_param_index(AudHost* host, uint32_t id);
+
+// [any thread] The stable id of a parameter: FNV-1a over the node id, a
+// slash and the parameter id, the top bit cleared; 0 for a NULL argument.
+AUD_EXPORT uint32_t aud_host_param_id(const char* node_id,
+                                      const char* param_id);
+
+// [control, one producer] Sets a parameter by its stable id like
+// aud_graph_set_param; AUD_ERROR_INVALID_ARGUMENT for a value outside the
+// parameter's range, which no document could load again.
+AUD_EXPORT int32_t aud_host_set_param(AudHost* host, uint32_t id, float value,
+                                      uint32_t ramp_frames);
+
+// [control] The current value of a parameter by its stable id.
+AUD_EXPORT int32_t aud_host_get_param(AudHost* host, uint32_t id,
+                                      float* value);
+
+// [control] The latency and the tail of the published program:
+// aud_graph_output_latency and aud_graph_output_tail.
+AUD_EXPORT int32_t aud_host_latency(AudHost* host);
+AUD_EXPORT uint32_t aud_host_tail(AudHost* host);
+
+// [control] The assets of the loaded document.
+AUD_EXPORT int32_t aud_host_num_assets(AudHost* host);
+AUD_EXPORT int32_t aud_host_asset(AudHost* host, uint32_t index,
+                                  AudHostAsset* out);
+
+// [control] Relinks an asset: the new path is resolved and checked, every
+// string setting that names the asset is applied again, and the saved
+// document carries the new path (relative to the base directory when it
+// lies inside it).
+AUD_EXPORT int32_t aud_host_set_asset_path(AudHost* host, const char* id,
+                                           const char* path);
+
+// [realtime] Renders one block: aud_graph_render_host on the host's graph.
+AUD_EXPORT int32_t aud_host_render(AudHost* host,
+                                   AudHostRenderRequest* request);
+
+// ............................................................................
+// The debug watchdog (ticket 20)
+//
+// Compiled in with AUD_GRAPH_WATCHDOG: the native tests always, a build
+// hook when the app sets the user define `watchdog: true`. While a block
+// renders, the global operator new and delete and the host api's alloc,
+// free and log count every call from the rendering thread as a violation
+// of the realtime contract, then do their work anyway. The block reports
+// the hits as AUD_GRAPH_ERROR_REALTIME_VIOLATION and the counters keep
+// them. A release build without the define carries none of this.
+//
+// What it sees: the native tests link the engine and their nodes into one
+// program and see every allocation. In an app the replaced operators serve
+// the library of aud_audio_graph only - the engine and its reference nodes;
+// a DSP package is a library of its own whose allocations the watchdog
+// cannot see, only its calls of the host api. RealtimeSanitizer sees every
+// library (S22).
+
+// Whether the watchdog is compiled in.
+AUD_EXPORT int32_t aud_graph_watchdog_enabled(void);
+
+// [any thread] The violations every graph of the process counted since
+// the last reset; 0 without the watchdog.
+AUD_EXPORT uint64_t aud_graph_watchdog_violations(void);
+
+// [any thread] Zeroes the process-wide count.
+AUD_EXPORT void aud_graph_watchdog_reset(void);
 
 #ifdef __cplusplus
 }

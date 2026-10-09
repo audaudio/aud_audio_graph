@@ -235,6 +235,67 @@ class AudGraphEventConnection {
 }
 
 // #############################################################################
+/// A file a graph document references (plugin-002): an id and a path. A
+/// string setting of a node preset names it as `asset:<id>`; the graph or
+/// the headless host resolves [path] against its base directory and hands
+/// the node the resolved path, so a document travels with its files.
+class AudGraphAsset {
+  /// Creates an asset.
+  const AudGraphAsset({required this.id, required this.path});
+
+  /// An asset from [toJson]; throws a [FormatException] when it does not
+  /// follow the schema.
+  factory AudGraphAsset.fromJson(Map<String, Object?> json) {
+    final id = json['id'];
+    final path = json['path'];
+    if (id is! String ||
+        !AudGraphDocument.idPattern.hasMatch(id) ||
+        path is! String ||
+        path.isEmpty) {
+      throw FormatException('An asset needs an id and a path', json);
+    }
+    for (final key in json.keys) {
+      if (key != 'id' && key != 'path') {
+        throw FormatException('Unknown key $key of asset $id', json);
+      }
+    }
+    return AudGraphAsset(id: id, path: path);
+  }
+
+  // ...........................................................................
+  /// The prefix of a string setting that names an asset.
+  static const String referencePrefix = 'asset:';
+
+  /// The string setting that names the asset [id].
+  static String reference(String id) => '$referencePrefix$id';
+
+  /// The id of the asset a string setting [value] names, or null.
+  static String? idOf(String value) => value.startsWith(referencePrefix)
+      ? value.substring(referencePrefix.length)
+      : null;
+
+  // ...........................................................................
+  /// The id, unique in the document.
+  final String id;
+
+  /// The path, relative to the base directory or absolute.
+  final String path;
+
+  /// The asset as JSON.
+  Map<String, Object?> toJson() => {'id': id, 'path': path};
+
+  @override
+  bool operator ==(Object other) =>
+      other is AudGraphAsset && other.id == id && other.path == path;
+
+  @override
+  int get hashCode => Object.hash(id, path);
+
+  @override
+  String toString() => 'AudGraphAsset(${toJson()})';
+}
+
+// #############################################################################
 /// The transport settings of a graph document.
 class AudGraphTransportSettings {
   /// Creates the settings.
@@ -264,7 +325,8 @@ class AudGraphTransportSettings {
         denominator < 1 ||
         loopStart is! num? ||
         loopEnd is! num? ||
-        (loopStart == null) != (loopEnd == null)) {
+        (loopStart == null) != (loopEnd == null) ||
+        (loopStart != null && loopEnd != null && loopEnd <= loopStart)) {
       throw FormatException('Invalid transport settings', json);
     }
     return AudGraphTransportSettings(
@@ -317,11 +379,12 @@ class AudGraphTransportSettings {
 }
 
 // #############################################################################
-/// A graph as JSON (plan of ticket 17, S2): the buses of the graph, its
-/// nodes with their presets, the audio and event connections and the
-/// transport settings. The document is what the editor, the presets and
-/// the plugin shells share; `AudGraph.load` builds a graph from it and
-/// `AudGraph.toDocument` writes one. The schema is [jsonSchema]
+/// A graph as JSON (plan of ticket 17, S2): the buses of the graph, the
+/// files it references, its nodes with their presets, the audio and event
+/// connections and the transport settings. The document is what the
+/// editor, the presets and the plugin shells share; `AudGraph.load` and
+/// the headless host `AudHost` build a graph from it, `AudGraph.toDocument`
+/// and `AudHost.save` write one. The schema is [jsonSchema]
 /// (`doc/schemas/aud_graph_document.schema.json`).
 class AudGraphDocument {
   /// Creates a document.
@@ -329,6 +392,7 @@ class AudGraphDocument {
     this.name = '',
     this.inputChannels = const [],
     this.outputChannels = const [2],
+    this.assets = const [],
     this.nodes = const [],
     this.connections = const [],
     this.eventConnections = const [],
@@ -368,6 +432,7 @@ class AudGraphDocument {
             'outputChannels',
           ) ??
           const [2],
+      assets: list('assets', AudGraphAsset.fromJson),
       nodes: list('nodes', AudGraphDocumentNode.fromJson),
       connections: list('connections', AudGraphConnection.fromJson),
       eventConnections: list(
@@ -408,6 +473,7 @@ class AudGraphDocument {
     'name',
     'inputChannels',
     'outputChannels',
+    'assets',
     'nodes',
     'connections',
     'eventConnections',
@@ -446,6 +512,27 @@ class AudGraphDocument {
       'name': {'description': 'The name of the graph.', 'type': 'string'},
       'inputChannels': {r'$ref': r'#/$defs/channels'},
       'outputChannels': {r'$ref': r'#/$defs/channels'},
+      'assets': {
+        'description':
+            'The files the nodes load; a string setting names one as '
+            'asset:<id>.',
+        'type': 'array',
+        'items': {
+          'type': 'object',
+          'required': ['id', 'path'],
+          'additionalProperties': false,
+          'properties': {
+            'id': {r'$ref': r'#/$defs/nodeId'},
+            'path': {
+              'description':
+                  'Relative to the base directory of the host, or '
+                  'absolute.',
+              'type': 'string',
+              'minLength': 1,
+            },
+          },
+        },
+      },
       'nodes': {
         'type': 'array',
         'items': {
@@ -526,6 +613,9 @@ class AudGraphDocument {
   /// The channels of each output bus of the graph.
   final List<int> outputChannels;
 
+  /// The files the nodes reference.
+  final List<AudGraphAsset> assets;
+
   /// The nodes.
   final List<AudGraphDocumentNode> nodes;
 
@@ -540,9 +630,24 @@ class AudGraphDocument {
 
   // ...........................................................................
   /// The problems of the document: duplicate ids, connections to unknown
-  /// ids. Empty when the document is consistent.
+  /// ids, references to unknown assets. Empty when the document is
+  /// consistent.
   List<String> validate() {
     final problems = <String>[];
+    final assetIds = <String>{};
+    for (final asset in assets) {
+      if (!assetIds.add(asset.id)) {
+        problems.add('Duplicate asset id ${asset.id}');
+      }
+    }
+    for (final node in nodes) {
+      for (final value in node.preset?.strings.values ?? const <String>[]) {
+        final id = AudGraphAsset.idOf(value);
+        if (id != null && !assetIds.contains(id)) {
+          problems.add('Unknown asset $id in node ${node.id}');
+        }
+      }
+    }
     final ids = <String>{};
     for (final node in nodes) {
       if (node.id == graphId) problems.add('A node must not be named $graphId');
@@ -566,6 +671,7 @@ class AudGraphDocument {
     if (name.isNotEmpty) 'name': name,
     'inputChannels': inputChannels,
     'outputChannels': outputChannels,
+    if (assets.isNotEmpty) 'assets': [for (final a in assets) a.toJson()],
     'nodes': [for (final node in nodes) node.toJson()],
     'connections': [for (final c in connections) c.toJson()],
     'eventConnections': [for (final c in eventConnections) c.toJson()],

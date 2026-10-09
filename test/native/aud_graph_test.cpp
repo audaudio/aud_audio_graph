@@ -7,441 +7,24 @@
 // The native tests of the graph engine; `node scripts/test-native.js`
 // builds and runs them with the sanitizers. They drive the C API the way
 // aud_audio_io and the plugin shells do and register test node types
-// through the host api the way DSP packages do.
+// through the host api the way DSP packages do; the fixture and the node
+// types live in aud_graph_fixture.hpp, shared with the host, stress and
+// watchdog tests of ticket 20.
 
+#include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
+#include <ctime>
 #include <functional>
 #include <vector>
 
 #include "aud_audio_graph.h"
+#include "aud_graph_fixture.hpp"
 #include "aud_test.hpp"
 #include "aud_ump.h"
 
-namespace {
-
-constexpr double kRate = 48000.0;
-constexpr uint32_t kFade = 240;  // 5 ms at 48 kHz
-
-// ............................................................................
-// Test node types, registered like the nodes of a DSP package
-
-struct Record {
-  int64_t position;
-  uint32_t offset;
-  uint32_t port;
-  uint32_t type;
-  uint32_t word0;
-};
-
-std::vector<Record> g_records;
-std::vector<uint32_t> g_resets;
-std::vector<uint32_t> g_fixedFrames;
-
-// aud.test.recorder: records the events it receives and its resets.
-struct Recorder {
-  int64_t position = 0;
-};
-
-void* recorderCreate(const AudNodeDescriptor*, const AudHostApi*) {
-  return new Recorder();
-}
-void recorderDestroy(void* instance) { delete static_cast<Recorder*>(instance); }
-int32_t recorderPrepare(void*, const AudPrepareInfo*) { return AUD_OK; }
-void recorderReset(void*, uint32_t reason) { g_resets.push_back(reason); }
-void recorderSetParam(void*, uint32_t, float) {}
-void recorderProcess(void*, const AudProcessContext* context) {
-  for (uint32_t i = 0; i < context->num_events; ++i) {
-    const AudEvent& e = context->events[i];
-    g_records.push_back({context->sample_position, e.sample_offset, e.port,
-                         e.type, e.words[0]});
-  }
-  for (uint32_t b = 0; b < context->num_output_buses; ++b) {
-    for (uint32_t c = 0; c < context->outputs[b].num_channels; ++c) {
-      std::memset(context->outputs[b].channels[c], 0,
-                  sizeof(float) * context->frames);
-    }
-  }
-}
-
-const AudBusDescriptor kMonoOut[] = {
-    {sizeof(AudBusDescriptor), "out", "Output", AUD_BUS_MAIN | AUD_BUS_OPTIONAL,
-     1, 2, 1},
-};
-const AudBusDescriptor kMonoIn[] = {
-    {sizeof(AudBusDescriptor), "in", "Input", AUD_BUS_MAIN, 1, 2, 1},
-};
-const AudEventPortDescriptor kEventIn[] = {
-    {sizeof(AudEventPortDescriptor), "events", "Events",
-     AUD_EVENT_PORT_MIDI | AUD_EVENT_PORT_CONTROL, 0},
-};
-const AudEventPortDescriptor kEventOut[] = {
-    {sizeof(AudEventPortDescriptor), "out", "Out", AUD_EVENT_PORT_MIDI, 0},
-};
-
-const AudNodeVTable kRecorderVTable = {
-    sizeof(AudNodeVTable), recorderCreate, recorderDestroy, recorderPrepare,
-    recorderReset,         recorderSetParam, recorderProcess, nullptr,
-    nullptr,               nullptr,          nullptr,         nullptr,
-};
-
-const AudNodeDescriptor kRecorderDescriptor = {
-    sizeof(AudNodeDescriptor),
-    AUD_ABI_VERSION_MAJOR,
-    AUD_ABI_VERSION_MINOR,
-    1,
-    "aud.test.recorder",
-    "Recorder",
-    "Test",
-    AUD_NODE_CAP_VARIABLE_BLOCK | AUD_NODE_CAP_EVENTS |
-        AUD_NODE_CAP_RESET_ON_STOP | AUD_NODE_CAP_RESET_ON_SEEK,
-    0,
-    0,
-    1,
-    nullptr,
-    kMonoOut,
-    1,
-    0,
-    kEventIn,
-    nullptr,
-    0,
-    0,
-    nullptr,
-    nullptr,
-    &kRecorderVTable,
-};
-
-// aud.test.delay: delays its mono input by 100 frames and reports it.
-constexpr uint32_t kTestLatency = 100;
-
-struct Delay {
-  std::vector<float> line = std::vector<float>(kTestLatency, 0.0f);
-  uint32_t pos = 0;
-};
-
-void* delayCreate(const AudNodeDescriptor*, const AudHostApi*) {
-  return new Delay();
-}
-void delayDestroy(void* instance) { delete static_cast<Delay*>(instance); }
-int32_t delayPrepare(void*, const AudPrepareInfo*) { return AUD_OK; }
-void delayReset(void*, uint32_t) {}
-void delaySetParam(void*, uint32_t, float) {}
-void delayProcess(void* instance, const AudProcessContext* context) {
-  auto* delay = static_cast<Delay*>(instance);
-  const float* in = context->inputs[0].channels[0];
-  float* out = context->outputs[0].channels[0];
-  for (uint32_t i = 0; i < context->frames; ++i) {
-    out[i] = delay->line[delay->pos];
-    delay->line[delay->pos] = in[i];
-    delay->pos = (delay->pos + 1) % kTestLatency;
-  }
-}
-uint32_t delayLatency(void*) { return kTestLatency; }
-
-const AudNodeVTable kDelayVTable = {
-    sizeof(AudNodeVTable), delayCreate, delayDestroy, delayPrepare, delayReset,
-    delaySetParam,         delayProcess, nullptr,     delayLatency, nullptr,
-    nullptr,               nullptr,
-};
-
-const AudNodeDescriptor kDelayDescriptor = {
-    sizeof(AudNodeDescriptor),
-    AUD_ABI_VERSION_MAJOR,
-    AUD_ABI_VERSION_MINOR,
-    1,
-    "aud.test.delay",
-    "Delay",
-    "Test",
-    AUD_NODE_CAP_VARIABLE_BLOCK | AUD_NODE_CAP_LATENCY,
-    0,
-    1,
-    1,
-    kMonoIn,
-    kMonoOut,
-    0,
-    0,
-    nullptr,
-    nullptr,
-    0,
-    0,
-    nullptr,
-    nullptr,
-    &kDelayVTable,
-};
-
-// aud.test.fixed: needs constant blocks; copies its input and records the
-// frame counts it sees.
-void* fixedCreate(const AudNodeDescriptor*, const AudHostApi*) {
-  return new int(0);
-}
-void fixedDestroy(void* instance) { delete static_cast<int*>(instance); }
-void fixedProcess(void*, const AudProcessContext* context) {
-  g_fixedFrames.push_back(context->frames);
-  std::memcpy(context->outputs[0].channels[0], context->inputs[0].channels[0],
-              sizeof(float) * context->frames);
-}
-
-const AudNodeVTable kFixedVTable = {
-    sizeof(AudNodeVTable), fixedCreate, fixedDestroy, delayPrepare, delayReset,
-    delaySetParam,         fixedProcess, nullptr,     nullptr,      nullptr,
-    nullptr,               nullptr,
-};
-
-const AudNodeDescriptor kFixedDescriptor = {
-    sizeof(AudNodeDescriptor),
-    AUD_ABI_VERSION_MAJOR,
-    AUD_ABI_VERSION_MINOR,
-    1,
-    "aud.test.fixed",
-    "Fixed",
-    "Test",
-    0,
-    0,
-    1,
-    1,
-    kMonoIn,
-    kMonoOut,
-    0,
-    0,
-    nullptr,
-    nullptr,
-    0,
-    0,
-    nullptr,
-    nullptr,
-    &kFixedVTable,
-};
-
-// aud.test.emitter: emits every event it receives on its event output.
-struct Emitter {
-  const AudHostApi* host;
-};
-
-void* emitterCreate(const AudNodeDescriptor*, const AudHostApi* host) {
-  return new Emitter{host};
-}
-void emitterDestroy(void* instance) { delete static_cast<Emitter*>(instance); }
-void emitterProcess(void* instance, const AudProcessContext* context) {
-  auto* emitter = static_cast<Emitter*>(instance);
-  for (uint32_t i = 0; i < context->num_events; ++i) {
-    AudEvent event = context->events[i];
-    event.port = 0;
-    emitter->host->emit_event(emitter->host->host, instance, &event);
-  }
-}
-
-const AudNodeVTable kEmitterVTable = {
-    sizeof(AudNodeVTable), emitterCreate, emitterDestroy, delayPrepare,
-    delayReset,            delaySetParam, emitterProcess, nullptr,
-    nullptr,               nullptr,       nullptr,        nullptr,
-};
-
-const AudNodeDescriptor kEmitterDescriptor = {
-    sizeof(AudNodeDescriptor),
-    AUD_ABI_VERSION_MAJOR,
-    AUD_ABI_VERSION_MINOR,
-    1,
-    "aud.test.emitter",
-    "Emitter",
-    "Test",
-    AUD_NODE_CAP_VARIABLE_BLOCK | AUD_NODE_CAP_EVENTS |
-        AUD_NODE_CAP_EVENT_OUTPUT,
-    0,
-    0,
-    0,
-    nullptr,
-    nullptr,
-    1,
-    1,
-    kEventIn,
-    kEventOut,
-    0,
-    0,
-    nullptr,
-    nullptr,
-    &kEmitterVTable,
-};
-
-// ............................................................................
-// A graph with one input bus and one output bus
-
-struct Fixture {
-  AudGraph* graph = nullptr;
-  uint32_t inChannels;
-  uint32_t outChannels;
-  uint32_t maxFrames;
-  std::vector<std::vector<float>> in;
-  std::vector<std::vector<float>> out;
-  std::vector<float*> inPointers;
-  std::vector<float*> outPointers;
-  AudAudioBus inBus{};
-  AudAudioBus outBus{};
-
-  explicit Fixture(uint32_t inputs = 0, uint32_t outputs = 1,
-                   uint32_t frames = 256,
-                   std::function<void(AudGraphConfig&)> tweak = nullptr)
-      : inChannels(inputs), outChannels(outputs), maxFrames(frames) {
-    AudGraphConfig config{};
-    config.struct_size = sizeof(AudGraphConfig);
-    config.sample_rate = kRate;
-    config.max_frames = frames;
-    config.num_input_buses = inputs > 0 ? 1 : 0;
-    config.input_channels = &inChannels;
-    config.num_output_buses = outputs > 0 ? 1 : 0;
-    config.output_channels = &outChannels;
-    if (tweak) tweak(config);
-    graph = aud_graph_create(&config);
-    // One frame more than the largest block: a refused block is cleared.
-    in.assign(inputs, std::vector<float>(frames + 1, 0.0f));
-    out.assign(outputs, std::vector<float>(frames + 1, 0.0f));
-    for (auto& channel : in) inPointers.push_back(channel.data());
-    for (auto& channel : out) outPointers.push_back(channel.data());
-    inBus = {sizeof(AudAudioBus), inputs, inPointers.data()};
-    outBus = {sizeof(AudAudioBus), outputs, outPointers.data()};
-    const AudHostApi* host = aud_graph_host_api(graph);
-    host->register_node_type(host->host, &kRecorderDescriptor);
-    host->register_node_type(host->host, &kDelayDescriptor);
-    host->register_node_type(host->host, &kFixedDescriptor);
-    host->register_node_type(host->host, &kEmitterDescriptor);
-    g_records.clear();
-    g_resets.clear();
-    g_fixedFrames.clear();
-  }
-
-  ~Fixture() { aud_graph_destroy(graph); }
-
-  int32_t node(const char* type, const AudNodeConfig* config = nullptr) {
-    return aud_graph_create_node(graph, type, config);
-  }
-
-  int32_t commit(const std::function<void()>& edits) {
-    const int32_t begun = aud_graph_begin(graph);
-    if (begun != AUD_OK) return begun;
-    edits();
-    return aud_graph_commit(graph);
-  }
-
-  int32_t connect(int32_t from, int32_t to, uint32_t fromBus = 0,
-                  uint32_t toBus = 0, uint32_t flags = 0) {
-    return aud_graph_connect(graph, from, fromBus, to, toBus, flags);
-  }
-
-  int32_t render(uint32_t frames, const AudStreamTime* time = nullptr,
-                 const AudEvent* events = nullptr, uint32_t numEvents = 0) {
-    AudRenderRequest request{};
-    request.struct_size = sizeof(AudRenderRequest);
-    request.frames = frames;
-    request.num_input_buses = inChannels > 0 ? 1 : 0;
-    request.num_output_buses = outChannels > 0 ? 1 : 0;
-    request.inputs = &inBus;
-    request.outputs = &outBus;
-    request.time = time;
-    request.num_events = numEvents;
-    request.events = events;
-    return aud_graph_render(graph, &request);
-  }
-
-  // Renders blocks and collects the first output channel.
-  std::vector<float> renderFrames(uint32_t frames, uint32_t block = 256) {
-    std::vector<float> result;
-    while (result.size() < frames) {
-      const uint32_t n = std::min<uint32_t>(block, frames - result.size());
-      render(n);
-      result.insert(result.end(), out[0].begin(), out[0].begin() + n);
-    }
-    return result;
-  }
-
-  std::vector<AudGraphNotification> take() {
-    std::vector<AudGraphNotification> result(64);
-    const int32_t count = aud_graph_take_notifications(graph, result.data(), 64);
-    result.resize(count < 0 ? 0 : count);
-    return result;
-  }
-
-  uint32_t countNotifications(uint32_t type, int32_t code = INT32_MIN) {
-    uint32_t count = 0;
-    for (const AudGraphNotification& n : take()) {
-      if (n.type == type && (code == INT32_MIN || n.code == code)) count += 1;
-    }
-    return count;
-  }
-
-  AudGraphStats stats() {
-    AudGraphStats s{};
-    s.struct_size = sizeof(AudGraphStats);
-    aud_graph_get_stats(graph, &s);
-    return s;
-  }
-
-  AudGraphTransportState transport() {
-    AudGraphTransportState t{};
-    t.struct_size = sizeof(AudGraphTransportState);
-    aud_graph_transport_state(graph, &t);
-    return t;
-  }
-
-  int32_t request(uint32_t type, double value = 0, int64_t beat = 0,
-                  int64_t beatEnd = 0, const AudTimestamp* at = nullptr) {
-    AudTransportRequest r{};
-    r.struct_size = sizeof(AudTransportRequest);
-    r.type = type;
-    r.at.struct_size = sizeof(AudTimestamp);
-    if (at) r.at = *at;
-    r.value = value;
-    r.beat = beat;
-    r.beat_end = beatEnd;
-    r.numerator = 3;
-    r.denominator = 4;
-    return aud_graph_transport(graph, &r);
-  }
-};
-
-uint32_t risingCrossings(const std::vector<float>& samples) {
-  uint32_t count = 0;
-  for (size_t i = 1; i < samples.size(); ++i) {
-    if (samples[i - 1] < 0 && samples[i] >= 0) count += 1;
-  }
-  return count;
-}
-
-AudEvent noteOn(uint32_t note, uint32_t velocity = 100, uint32_t port = 0) {
-  const uint32_t word = aud_ump_midi1_word(0, 0x90, note, velocity);
-  return aud_event_ump(&word, 1, 0, port);
-}
-
-AudEvent noteOff(uint32_t note, uint32_t port = 0) {
-  const uint32_t word = aud_ump_midi1_word(0, 0x80, note, 64);
-  return aud_event_ump(&word, 1, 0, port);
-}
-
-AudTimestamp atSample(int64_t position) {
-  AudTimestamp t{};
-  t.struct_size = sizeof(AudTimestamp);
-  t.domain = AUD_TIME_SAMPLE;
-  t.value = position;
-  return t;
-}
-
-AudTimestamp atBeat(double beats) {
-  AudTimestamp t{};
-  t.struct_size = sizeof(AudTimestamp);
-  t.domain = AUD_TIME_BEAT;
-  t.value = static_cast<int64_t>(beats * static_cast<double>(AUD_BEAT_FACTOR));
-  return t;
-}
-
-// A square wave at 0.5 Hz is a constant for the first 48000 frames: the
-// steady signal the fade tests look at.
-int32_t steadyOscillator(Fixture& f, float amplitude = 0.5f) {
-  const int32_t osc = f.node(AUD_GRAPH_OSCILLATOR_TYPE_ID);
-  aud_graph_set_param(f.graph, osc, AUD_OSCILLATOR_PARAM_WAVEFORM, 2, 0);
-  aud_graph_set_param(f.graph, osc, AUD_OSCILLATOR_PARAM_FREQUENCY, 0.5f, 0);
-  aud_graph_set_param(f.graph, osc, AUD_OSCILLATOR_PARAM_AMPLITUDE, amplitude, 0);
-  return osc;
-}
-
-}  // namespace
+using namespace aud_test_fixture;
 
 // ############################################################################
 
@@ -469,7 +52,7 @@ AUD_TEST(create_refuses_invalid_configurations) {
 
 AUD_TEST(registers_the_reference_nodes_and_test_nodes) {
   Fixture f;
-  AUD_CHECK(aud_graph_num_node_types(f.graph) == 9);
+  AUD_CHECK(aud_graph_num_node_types(f.graph) == 12);
   AUD_CHECK(std::strcmp(aud_graph_node_type(f.graph, 0)->type_id,
                         AUD_GRAPH_FEEDBACK_TYPE_ID) == 0);
   AUD_CHECK(aud_graph_node_type(f.graph, 99) == nullptr);
@@ -1207,9 +790,10 @@ AUD_TEST(keeps_the_latest_pending_program) {
 
 AUD_TEST(wakes_the_listener_once_per_batch) {
   Fixture f;
-  static int wakes = 0;
+  // The notification thread counts, the test thread reads: an atomic.
+  static std::atomic<int> wakes{0};
   wakes = 0;
-  AUD_CHECK(aud_graph_set_listener(f.graph, [](void* user) { *static_cast<int*>(user) += 1; }, &wakes) == AUD_OK);
+  AUD_CHECK(aud_graph_set_listener(f.graph, [](void* user) { static_cast<std::atomic<int>*>(user)->fetch_add(1); }, &wakes) == AUD_OK);
   const int32_t osc = f.node(AUD_GRAPH_OSCILLATOR_TYPE_ID);
   f.commit([&] { f.connect(osc, AUD_GRAPH_NODE); });
   aud_graph_start(f.graph);
@@ -1223,4 +807,13 @@ AUD_TEST(wakes_the_listener_once_per_batch) {
   AUD_CHECK(aud_graph_set_listener(f.graph, nullptr, nullptr) == AUD_OK);
 }
 
-int main() { return aud_test::run(); }
+int main() {
+  // Nothing that renders may allocate on the rendering thread: the watchdog
+  // count has to be zero after every test, and a test that breaks the
+  // contract on purpose resets it before it ends.
+  aud_test::afterEach() = [] {
+    AUD_CHECK(aud_graph_watchdog_violations() == 0);
+    aud_graph_watchdog_reset();
+  };
+  return aud_test::run();
+}
