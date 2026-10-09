@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 - 2026-10-09
 
 ### Changed
 
@@ -34,7 +34,6 @@
 - Refuse descriptors without parameter or string ids
 
 - Add AudHost and the asset table of the graph document on the Dart side
-
 
 ## 0.2.0 - 2026-10-08
 
