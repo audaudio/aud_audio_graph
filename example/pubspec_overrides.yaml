@@ -1,0 +1,5 @@
+# The example runs against the sibling checkouts of the ticket, so that it
+# sees the unreleased versions of the family (ticket 22).
+dependency_overrides:
+  aud_audio_core:
+    path: ../../aud_audio_core

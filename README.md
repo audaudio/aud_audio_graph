@@ -102,10 +102,16 @@ hooks:
 
 ## Dart API
 
-```dart
-import 'package:aud_audio_graph/aud_audio_graph.dart';
+`aud_audio_graph.dart` is platform-neutral and compiles for the web
+(web-001): `AudGraph` is an interface whose factory creates an
+`AudGraphFfi` on native platforms. `aud_audio_graph_ffi.dart` adds
+`AudGraphFfi` with `pointer` and `hostApi`, the render entry
+`aud_graph_render`, the headless host, the offline renderer and WAV files.
 
-final graph = AudGraph(sampleRate: 48000, maxFrames: 256, outputChannels: [2]);
+```dart
+import 'package:aud_audio_graph/aud_audio_graph_ffi.dart';
+
+final graph = AudGraphFfi(sampleRate: 48000, maxFrames: 256, outputChannels: [2]);
 final osc = graph.createNode('aud.graph.oscillator', name: 'osc');
 final filter = graph.createNode('aud.graph.filter', name: 'filter');
 graph.setParam(filter, 'cutoff', 800);                  // before the first commit: at once
@@ -124,13 +130,14 @@ final wav = AudOfflineRenderer(graph).renderWav(frames: 48000);
 AudWavFile.write('out.wav', wav);
 
 final document = graph.toDocument(name: 'Demo');         // JSON, schema in doc/schemas
-final copy = AudGraph.fromDocument(document);
+final copy = AudGraph.fromDocument(document);       // an AudGraphFfi
 ```
 
 `graph.send(command)` takes the typed commands of the core and
 `graph.handleOsc(message)` the OSC messages of osc-001; DSP packages
 register their node types with `graph.hostApi`; an `aud_audio_io` stream
-calls `aud_graph_render` with `graph.pointer` as the user pointer.
+calls `aud_graph_render` with `graph.pointer` as the user pointer, as
+`AudEngine` of `aud_audio` does.
 
 ## Tests
 
