@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Add worker tasks, loads, the cache budget and node messages
+
+- The resources of the process: two worker threads with a lock-free task queue that the audio thread may post to, the sample cache budget (256 MB) with trims of the registered caches, the largest first; a trim requested while one runs is not lost, a smaller budget trims at once on the calling thread
+- The host api of ABI 0.4: post_task, begin_load, load_progress, end_load, load_cancelled, register_cache, unregister_cache, cache_changed, cache_budget, report and emit_message
+- Loads with ids, progress, cancellation and the last 64 that ended: aud_graph_loads, aud_graph_load_info, aud_graph_cancel_load, aud_graph_wait_loads, AUD_NOTIFY_LOAD
+- Messages of nodes: aud_graph_send_message delivers an engine-owned OSC message as AUD_EVENT_MESSAGE, the slots come back on every path; answers through aud_graph_take_messages and AUD_NOTIFY_MESSAGE
+- Diagnostics nodes report per block, the watchdog kind AUD_GRAPH_VIOLATION_CONTROL, offline renders that wait for the workers after every block
+- The tails of the nodes are read again at every commit, so a tail may follow what a node loaded
+- aud_graph_wait_loads reads the tails again; message slots come back when a block is skipped; host events cannot be messages; a reply blob without bytes is empty
+- Presets apply their strings in the order of the node's string keys, in the headless host and in Dart
+- The headless host takes load ids from set_string and waits for the loads: aud_host_wait_loads
+- Dart: AudLoad, AudNodeMessage, AudCacheUsage, AudLoadNotification, AudMessageNotification; AudGraph.setString returns the load id, loads, loadOf, cancelLoad, loadEnded, waitLoads, sendMessage, messages, cacheBudget, cacheUsage, waitTasks; AudHost.waitLoads
+- Native tests of the tasks, loads, caches, reports and messages under ASan/UBSan, RealtimeSanitizer and ThreadSanitizer
+
 ## 0.4.0 - 2026-10-09
 
 ### Changed
@@ -34,6 +52,7 @@
 - Refuse descriptors without parameter or string ids
 
 - Add AudHost and the asset table of the graph document on the Dart side
+
 
 ## 0.2.0 - 2026-10-08
 

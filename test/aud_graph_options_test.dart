@@ -21,6 +21,8 @@ void main() {
       maxTailFrames: 12,
       lookahead: Duration(seconds: 2),
       dropLateEvents: true,
+      messageCapacity: 13,
+      replyCapacity: 14,
     );
 
     test('round trip through JSON', () {
@@ -31,6 +33,8 @@ void main() {
         AudGraphOptions.fromJson(options.toJson()).hashCode,
       );
       expect(options.toString(), contains('maxNodes: 4'));
+      expect(options.toJson()['messageCapacity'], 13);
+      expect(options.toJson()['replyCapacity'], 14);
     });
 
     test('shapes a graph', () {

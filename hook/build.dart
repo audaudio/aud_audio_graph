@@ -40,6 +40,7 @@ void main(List<String> args) async {
         'src/aud_graph_nodes.cpp',
         'src/aud_graph_offline.cpp',
         'src/aud_graph_render.cpp',
+        'src/aud_graph_resources.cpp',
         'src/aud_graph_watchdog.cpp',
         'src/aud_json.cpp',
       ],

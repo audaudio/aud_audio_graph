@@ -401,6 +401,14 @@ bool readPresetStrings(const Json& json, const std::string& what,
     }
     parts->strings.emplace_back(slot, raw);
   }
+  // Applied in the order of the node's string keys, whatever the order of
+  // the JSON: a key may depend on one before it, e.g. the text of the
+  // sampler on its virtual path (ticket 25).
+  std::stable_sort(parts->strings.begin(), parts->strings.end(),
+                   [](const std::pair<uint32_t, std::string>& a,
+                      const std::pair<uint32_t, std::string>& b) {
+                     return a.first < b.first;
+                   });
   return true;
 }
 
@@ -911,9 +919,11 @@ bool applyParts(AudGraph* graph, const PresetParts& parts,
   for (const auto& string : parts.strings) {
     const uint32_t slot = string.first;
     const std::string value = stringValue(assets, string.second);
+    // A positive result is the id of a load the node started on a worker
+    // (ticket 25); aud_host_wait_loads waits for it.
     const int32_t result = aud_graph_set_string(
         graph, node->handle, d->string_keys[slot].key, value.c_str());
-    if (result != AUD_OK) {
+    if (result < AUD_OK) {
       return error->fail(result, withCode("node " + node->id +
                                               " refused string " +
                                               d->string_keys[slot].id,
@@ -1527,7 +1537,7 @@ AUD_EXPORT int32_t aud_host_set_asset_path(AudHost* host, const char* id,
       const int32_t result = aud_graph_set_string(
           host->graph, node.handle, node.descriptor->string_keys[slot].key,
           resolved.c_str());
-      if (result != AUD_OK) {
+      if (result < AUD_OK) {
         return refuse(host, result,
                       withCode("node " + node.id +
                                    " refused the relinked asset " + id,
@@ -1542,4 +1552,9 @@ AUD_EXPORT int32_t aud_host_render(AudHost* host,
                                    AudHostRenderRequest* request) {
   if (host == nullptr) return AUD_ERROR_INVALID_ARGUMENT;
   return aud_graph_render_host(host->graph, request);
+}
+
+AUD_EXPORT int32_t aud_host_wait_loads(AudHost* host, uint32_t timeout_ms) {
+  if (host == nullptr) return AUD_ERROR_INVALID_ARGUMENT;
+  return aud_graph_wait_loads(host->graph, 0, timeout_ms);
 }

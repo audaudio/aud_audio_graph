@@ -472,6 +472,13 @@ AUD_TEST(host_applies_presets_and_relinks_assets) {
   float value = 0;
   AUD_CHECK(aud_host_get_param(host, b, &value) == AUD_OK && value == 55.0f);
   AUD_CHECK(p->name == "World" && p->file == dir.path + "/song.txt");
+  // The strings go in the order of the node's string keys, not of the JSON.
+  p->order.clear();
+  const char* reversed =
+      "{\"schema\": 1, \"type\": \"aud.test.preset\", "
+      "\"strings\": {\"name\": \"World\", \"file\": \"asset:song\"}}";
+  AUD_CHECK(aud_host_apply_preset(host, "preset", reversed, std::strlen(reversed)) == AUD_OK);
+  AUD_CHECK(p->order == "file,name,");
   AUD_CHECK(aud_host_apply_preset(host, "nothing", preset, std::strlen(preset)) == AUD_ERROR_NOT_FOUND);
   AUD_CHECK(aud_host_apply_preset(host, "preset", "{", 1) == AUD_ERROR_INVALID_ARGUMENT);
   AUD_CHECK(aud_host_apply_preset(host, nullptr, preset, 1) == AUD_ERROR_INVALID_ARGUMENT);

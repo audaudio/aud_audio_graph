@@ -14,9 +14,11 @@
 #define AUD_GRAPH_INTERNAL_HPP
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -67,6 +69,17 @@ constexpr uint32_t kMinTapRingFrames = 8192;
 constexpr uint32_t kTapReadAttempts = 16;
 // No reset waits for a node.
 constexpr uint32_t kNoReset = UINT32_MAX;
+// The defaults of the message capacities (ticket 25).
+constexpr uint32_t kDefaultMessageCapacity = 256;
+constexpr uint32_t kDefaultReplyCapacity = 256;
+// The arguments and the bytes - path, texts, blobs - one message may hold.
+constexpr uint32_t kMaxMessageArgs = 16;
+constexpr uint32_t kMessageBytes = 1024;
+// The diagnostics nodes report in one block (AudHostApi.report), by node
+// and code; more are counted together.
+constexpr uint32_t kMaxNodeReports = 16;
+// The loads that ended which a graph keeps for aud_graph_load_info.
+constexpr size_t kKeptLoads = 64;
 
 struct NodeInstance;
 struct Program;
@@ -167,15 +180,56 @@ struct Scheduler {
   uint32_t top(uint32_t domain) const;
   void pop(uint32_t domain);
   void release(uint32_t index);
-  // Marks events cancelled: those of `instance` (or all when NULL) with
-  // `id` (or all when 0); returns the number cancelled.
-  uint32_t cancel(const NodeInstance* instance, uint32_t id);
+  // Removes events: those of `instance` (or all when NULL) with `id` (or
+  // all when 0); `removed` sees each of them before its place is freed.
+  // Returns the number removed.
+  uint32_t cancel(const NodeInstance* instance, uint32_t id,
+                  void (*removed)(void* user, const AudEvent& event),
+                  void* user);
 
  private:
   int64_t keyOf(uint32_t index) const;
   bool less(uint32_t a, uint32_t b) const;
   void siftUp(EventHeap& heap, size_t position);
   void siftDown(EventHeap& heap, size_t position);
+};
+
+// ............................................................................
+// Messages of nodes (osc-001, ticket 25)
+
+// A message on its way to its node: the control thread fills a free slot,
+// the event carries a pointer to `message` in words 0 and 1 and the index
+// of the slot in word 2, and the realtime thread frees the slot when the
+// node has processed the event or when the event is dropped.
+struct MessageSlot {
+  std::atomic<bool> busy{false};
+  AudMessage message{};
+  AudMessageArg args[kMaxMessageArgs];
+  char data[kMessageBytes];
+};
+
+// A diagnostic a node reported in the block.
+struct NodeReport {
+  int32_t node = 0;
+  int32_t code = 0;
+  uint32_t count = 0;
+};
+
+// ............................................................................
+// Loads (lifecycle-001, ticket 25)
+
+struct Load {
+  int32_t id = 0;
+  int32_t node = 0;
+  std::string name;
+  std::string message;
+  std::atomic<float> progress{0};
+  std::atomic<int32_t> result{AUD_PENDING};
+  std::atomic<bool> cancelled{false};
+  int64_t startNs = 0;
+  int64_t endNs = 0;
+  float notifiedProgress = 0;  // the progress of the last notification
+  int64_t notifiedNs = 0;
 };
 
 // ............................................................................
@@ -583,6 +637,29 @@ struct AudGraph {
   // The host's event output of the block, realtime thread (ticket 20).
   AudHostRenderRequest* hostRequest = nullptr;
 
+  // Messages of nodes (ticket 25). The control thread fills the slots, the
+  // realtime thread frees them; the replies travel the other way.
+  std::unique_ptr<aud::MessageSlot[]> messageSlots;
+  uint32_t numMessageSlots = 0;
+  uint32_t nextMessageSlot = 0;  // control thread: where the search starts
+  std::unique_ptr<AudSpscQueue<AudGraphMessage>> replies;
+  std::atomic<uint64_t> messagesDropped{0};
+  // Realtime thread, per block.
+  uint32_t blockMessages = 0;
+  uint32_t blockMessagesDropped = 0;
+  int32_t blockMessagesDroppedNode = 0;
+  aud::NodeReport nodeReports[aud::kMaxNodeReports];
+  uint32_t numNodeReports = 0;
+  uint32_t nodeReportsMerged = 0;  // reports that found no free entry
+
+  // Loads (ticket 25): the control thread begins them, workers report.
+  std::mutex loadsMutex;
+  std::condition_variable loadsChanged;
+  std::vector<std::unique_ptr<aud::Load>> loads;
+  // Notifications of the control side and the workers, taken with those of
+  // the realtime thread; guarded by loadsMutex.
+  std::vector<AudGraphNotification> controlNotifications;
+
   // Counters the realtime thread writes and the control thread reads.
   std::atomic<uint64_t> blocksRendered{0};
   std::atomic<uint64_t> framesRendered{0};
@@ -620,6 +697,13 @@ void publishTransportState(AudGraph* graph);
 int32_t renderBlock(AudGraph* graph,
                     const AudRenderRequest* request) AUD_NONBLOCKING;
 void emitEvent(AudGraph* graph, void* instance, const AudEvent* event);
+// [realtime] A node sends a message to the control thread (ticket 25).
+void emitMessage(AudGraph* graph, void* instance, const AudMessage* message);
+// [realtime] A node reports a diagnostic for the block (ticket 25).
+void reportNode(AudGraph* graph, void* instance, int32_t code, uint32_t count);
+// [realtime, control] Frees the message slot of a message event; nothing
+// for other events.
+void releaseMessage(AudGraph* graph, const AudEvent& event);
 int64_t beatNow(AudGraph* graph);
 
 // aud_graph_nodes.cpp: registers the reference nodes.

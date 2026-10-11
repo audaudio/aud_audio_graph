@@ -28,6 +28,7 @@ class AudGraphStats {
     required this.timeFilterResets,
     required this.outputPeak,
     this.realtimeViolations = 0,
+    this.messagesDropped = 0,
   });
 
   // ...........................................................................
@@ -84,6 +85,9 @@ class AudGraphStats {
   /// frees and log calls (ticket 20); 0 without the watchdog.
   final int realtimeViolations;
 
+  /// The messages of nodes the reply queue could not hold (ticket 25).
+  final int messagesDropped;
+
   /// The mean block render in nanoseconds.
   double get renderTimeMeanNs =>
       blocksRendered == 0 ? 0 : renderTimeSumNs / blocksRendered;
@@ -108,6 +112,7 @@ class AudGraphStats {
     'timeFilterResets': timeFilterResets,
     'outputPeak': outputPeak,
     'realtimeViolations': realtimeViolations,
+    'messagesDropped': messagesDropped,
   };
 
   @override

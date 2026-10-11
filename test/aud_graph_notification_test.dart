@@ -49,6 +49,19 @@ void main() {
 
       const reset = AudTimeResetNotification(count: 1, samplePosition: 0);
       expect(reset.toJson()['count'], 1);
+
+      const load = AudLoadNotification(
+        node: 2,
+        load: 3,
+        result: AUD_OK,
+        progress: 1,
+        samplePosition: 0,
+      );
+      expect(load.isRunning, isFalse);
+      expect(load.toJson()['result'], 'AUD_OK');
+      expect(load.toOsc(1), isNull);
+      const message = AudMessageNotification(count: 2, samplePosition: 0);
+      expect(message.toJson()['count'], 2);
     });
 
     test('diagnostics name their code and explain it', () {
@@ -60,6 +73,7 @@ void main() {
         AUD_ERROR_STATE: 'parked',
         AUD_ERROR_OVERLOAD: 'longer than it lasts',
         AUD_ERROR_UNSUPPORTED: 'transport',
+        AUD_ERROR_UNDERFLOW: 'silence',
         AUD_GRAPH_ERROR_REALTIME_VIOLATION: 'allocated',
         AUD_ERROR_FAILED: 'AUD_ERROR_FAILED',
       };

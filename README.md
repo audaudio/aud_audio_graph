@@ -4,7 +4,7 @@ Audio graph engine of the Audanika Audio Engine: C++ render programs with persis
 
 Part of the Audanika Audio Engine; planned in [aud_audio_pm](https://github.com/audaudio/aud_audio_pm).
 
-## What the package holds (ABI 0.3, ticket 19)
+## What the package holds (ABI 0.4, tickets 19 and 25)
 
 The engine behind `src/aud_audio_graph.h`, built on the contracts of
 `aud_audio_core` (step S2 of the plan):
@@ -37,6 +37,33 @@ The engine behind `src/aud_audio_graph.h`, built on the contracts of
   `aud.graph.filter`, `aud.graph.feedback` and `aud.graph.tap`;
   `aud.core.gain` of the core is registered by the Dart side.
 
+## The resources of the process (ticket 25)
+
+The graphs of a process share what the packages need for their assets
+(lifecycle-002), through the host api of ABI 0.4:
+
+- Two worker threads with a lock-free task queue that the control thread,
+  the workers and the audio thread may post to. An offline render waits
+  for the workers after every block, so it repeats.
+- Loads with ids: a node opens a load in `set_string`, which returns its
+  id, reports progress and ends it with a result - done, failed with a
+  message, or cancelled. A graph keeps the running loads and the last 64
+  (`aud_graph_loads`, `aud_graph_load_info`, `aud_graph_cancel_load`,
+  `aud_graph_wait_loads`, `AUD_NOTIFY_LOAD`).
+- One sample cache budget for the process, 256 MB by default
+  (`aud_cache_set_budget`): packages register their caches and report
+  their bytes; when the process holds more, a worker asks the largest
+  cache to free what nobody uses, the least recently used first. A
+  smaller budget trims at once.
+- Reports of a node from the audio thread, summed per block into
+  `AUD_NOTIFY_DIAGNOSTIC`, e.g. a stream that fell behind.
+- Messages to nodes (osc-002): `aud_graph_send_message` copies an OSC
+  message into a slot of the graph and delivers it as an
+  `AUD_EVENT_MESSAGE` event, ordered with the other events; the node's
+  answers come back through `aud_graph_take_messages`.
+- The engine reads the tail of a node at every commit, so that a tail may
+  follow what the node loaded.
+
 ## The headless host (ticket 20)
 
 The C API `aud_host_*` runs a graph without Dart, as the plugin shells do
@@ -46,8 +73,10 @@ The C API `aud_host_*` runs a graph without Dart, as the plugin shells do
   parameters, string keys, state versions, assets on disk, parameter ids -
   and only then creates the nodes, applies their presets and connects
   them in one transaction; a refused document changes nothing.
-- Presets apply in the order strings, state blob, parameters; the host
-  keeps every parameter value. `aud_host_save` writes the document back
+- Presets apply in the order strings, state blob, parameters - the strings
+  in the order of the node's string keys -; the host keeps every
+  parameter value. A string that starts a load is fine: the host waits
+  for the loads of a document with `aud_host_wait_loads`. `aud_host_save` writes the document back
   with the current parameters, strings and state blobs.
 - Assets: the document's `assets` table maps ids to paths, a string
   `asset:<id>` reaches the node as the resolved path;
@@ -131,6 +160,13 @@ AudWavFile.write('out.wav', wav);
 
 final document = graph.toDocument(name: 'Demo');         // JSON, schema in doc/schemas
 final copy = AudGraph.fromDocument(document);       // an AudGraphFfi
+
+final id = graph.setString(sampler, 'sfz_file', path);   // a load on a worker
+final load = await graph.loadEnded(id);                  // AudLoad: result, progress, time
+graph.sendMessage(sampler, AudOscMessage('/num_regions'));
+graph.messages.listen((m) => print(m.arguments));        // the node's answers
+graph.cacheBudget = 128 << 20;                           // of the process
+print(graph.cacheUsage.bytes);
 ```
 
 `graph.send(command)` takes the typed commands of the core and

@@ -17,6 +17,7 @@ import 'package:test/test.dart';
 
 void main() {
   stringNodeTests();
+  messageNodeTests();
   late AudGraphFfi graph;
 
   setUp(() {
@@ -841,12 +842,18 @@ class DartStringNode {
   DartStringNode(Pointer<core.AudHostApi> host) {
     typeId = 'aud.test.strings'.toNativeUtf8();
     keyId = 'file'.toNativeUtf8();
+    secondKeyId = 'name'.toNativeUtf8();
     name = 'Strings'.toNativeUtf8();
-    key = calloc<core.AudStringKeyDescriptor>();
-    key.ref
+    key = calloc<core.AudStringKeyDescriptor>(2);
+    key[0]
       ..struct_size = sizeOf<core.AudStringKeyDescriptor>()
       ..key = 7
       ..id = keyId.cast()
+      ..name = name.cast();
+    key[1]
+      ..struct_size = sizeOf<core.AudStringKeyDescriptor>()
+      ..key = 8
+      ..id = secondKeyId.cast()
       ..name = name.cast();
     vtable = calloc<core.AudNodeVTable>();
     vtable.ref
@@ -866,7 +873,7 @@ class DartStringNode {
       ..name = name.cast()
       ..vendor = name.cast()
       ..capabilities = AUD_NODE_CAP_VARIABLE_BLOCK | AUD_NODE_CAP_STRINGS
-      ..num_string_keys = 1
+      ..num_string_keys = 2
       ..string_keys = key
       ..vtable = vtable;
     final register = host.ref.register_node_type
@@ -878,6 +885,7 @@ class DartStringNode {
 
   late final Pointer<Utf8> typeId;
   late final Pointer<Utf8> keyId;
+  late final Pointer<Utf8> secondKeyId;
   late final Pointer<Utf8> name;
   late final Pointer<core.AudStringKeyDescriptor> key;
   late final Pointer<core.AudNodeVTable> vtable;
@@ -938,6 +946,7 @@ class DartStringNode {
     calloc.free(key);
     calloc.free(name);
     calloc.free(keyId);
+    calloc.free(secondKeyId);
     calloc.free(typeId);
   }
 }
@@ -1017,27 +1026,431 @@ void stringNodeTests() {
       });
       expect(type.result, AUD_OK);
       DartStringNode.received.clear();
+      // The strings go in the order of the node's string keys, not of the
+      // preset.
       final node = graph.createNode(
         'aud.test.strings',
         preset: const AudNodePreset(
           typeId: 'aud.test.strings',
-          strings: {'file': 'a.sfz'},
+          strings: {'name': 'Piano', 'file': 'a.sfz'},
         ),
       );
-      expect(graph.stringsOf(node), {'file': 'a.sfz'});
+      expect(graph.stringsOf(node), {'file': 'a.sfz', 'name': 'Piano'});
       graph.setString(node, 'file', 'b.sfz');
       graph.send(
         AudSetStringCommand(node: node.handle, key: 7, value: 'c.sfz'),
       );
-      expect(DartStringNode.received, ['7=a.sfz', '7=b.sfz', '7=c.sfz']);
-      expect(graph.stringsOf(node), {'file': 'c.sfz'});
+      expect(DartStringNode.received, [
+        '7=a.sfz',
+        '8=Piano',
+        '7=b.sfz',
+        '7=c.sfz',
+      ]);
+      expect(graph.stringsOf(node), {'file': 'c.sfz', 'name': 'Piano'});
       expect(graph.toDocument().nodes.single.preset?.strings, {
         'file': 'c.sfz',
+        'name': 'Piano',
       });
       graph.transaction((_) {});
       graph.start();
       AudOfflineRenderer(graph).render(frames: 256);
       expect(graph.revision, 1);
+    });
+  });
+}
+
+/// A node type written in Dart that takes messages and loads (ticket 25):
+/// it answers every message with its path and arguments plus the sample
+/// offset, and every string opens a load that the test ends through the
+/// host api. Its callbacks run on the control thread: offline only.
+class DartMessageNode {
+  DartMessageNode(Pointer<core.AudHostApi> host) {
+    _host = host;
+    typeId = 'aud.test.messages'.toNativeUtf8();
+    keyId = 'file'.toNativeUtf8();
+    inputId = 'midi'.toNativeUtf8();
+    name = 'Messages'.toNativeUtf8();
+    key = calloc<core.AudStringKeyDescriptor>();
+    key.ref
+      ..struct_size = sizeOf<core.AudStringKeyDescriptor>()
+      ..key = 0
+      ..id = keyId.cast()
+      ..name = name.cast();
+    input = calloc<core.AudEventPortDescriptor>();
+    input.ref
+      ..struct_size = sizeOf<core.AudEventPortDescriptor>()
+      ..id = inputId.cast()
+      ..name = name.cast()
+      ..flags = AUD_EVENT_PORT_MIDI;
+    vtable = calloc<core.AudNodeVTable>();
+    vtable.ref
+      ..struct_size = sizeOf<core.AudNodeVTable>()
+      ..create = _create.nativeFunction
+      ..destroy = _destroy.nativeFunction
+      ..prepare = _prepare.nativeFunction
+      ..process = _process.nativeFunction
+      ..set_string = _setString.nativeFunction;
+    descriptor = calloc<core.AudNodeDescriptor>();
+    descriptor.ref
+      ..struct_size = sizeOf<core.AudNodeDescriptor>()
+      ..abi_major = AudAbi.major
+      ..abi_minor = AudAbi.minor
+      ..version = 1
+      ..type_id = typeId.cast()
+      ..name = name.cast()
+      ..vendor = name.cast()
+      ..capabilities =
+          AUD_NODE_CAP_VARIABLE_BLOCK |
+          AUD_NODE_CAP_EVENTS |
+          AUD_NODE_CAP_STRINGS |
+          AUD_NODE_CAP_MESSAGES
+      ..num_event_inputs = 1
+      ..event_inputs = input
+      ..num_string_keys = 1
+      ..string_keys = key
+      ..vtable = vtable;
+    final register = host.ref.register_node_type
+        .asFunction<
+          int Function(Pointer<Void>, Pointer<core.AudNodeDescriptor>)
+        >();
+    result = register(host.ref.host, descriptor);
+  }
+
+  late final Pointer<Utf8> typeId;
+  late final Pointer<Utf8> keyId;
+  late final Pointer<Utf8> inputId;
+  late final Pointer<Utf8> name;
+  late final Pointer<core.AudStringKeyDescriptor> key;
+  late final Pointer<core.AudEventPortDescriptor> input;
+  late final Pointer<core.AudNodeVTable> vtable;
+  late final Pointer<core.AudNodeDescriptor> descriptor;
+  late final int result;
+
+  static late Pointer<core.AudHostApi> _host;
+
+  /// Ends the load [id] like a worker would: [result] and [message].
+  static void end(int id, int result, [String? message]) => using((arena) {
+    final end = _host.ref.end_load
+        .asFunction<void Function(Pointer<Void>, int, int, Pointer<Char>)>();
+    end(
+      _host.ref.host,
+      id,
+      result,
+      message == null ? nullptr : message.toNativeUtf8(allocator: arena).cast(),
+    );
+  });
+
+  /// Reports the progress of the load [id].
+  static void progress(int id, double value) =>
+      _host.ref.load_progress
+          .asFunction<void Function(Pointer<Void>, int, double)>()(
+        _host.ref.host,
+        id,
+        value,
+      );
+
+  /// Whether the load [id] was cancelled.
+  static bool cancelled(int id) =>
+      _host.ref.load_cancelled.asFunction<int Function(Pointer<Void>, int)>()(
+        _host.ref.host,
+        id,
+      ) !=
+      0;
+
+  static final _create =
+      NativeCallable<
+        Pointer<Void> Function(
+          Pointer<core.AudNodeDescriptor>,
+          Pointer<core.AudHostApi>,
+        )
+      >.isolateLocal(_onCreate);
+  static final _destroy =
+      NativeCallable<Void Function(Pointer<Void>)>.isolateLocal(_onDestroy);
+  static final _prepare =
+      NativeCallable<
+        Int32 Function(Pointer<Void>, Pointer<core.AudPrepareInfo>)
+      >.isolateLocal(_onPrepare, exceptionalReturn: AUD_ERROR_FAILED);
+  static final _process =
+      NativeCallable<
+        Void Function(Pointer<Void>, Pointer<core.AudProcessContext>)
+      >.isolateLocal(_onProcess);
+  static final _setString =
+      NativeCallable<
+        Int32 Function(Pointer<Void>, Uint32, Pointer<Char>)
+      >.isolateLocal(_onSetString, exceptionalReturn: AUD_ERROR_FAILED);
+
+  static Pointer<Void> _onCreate(
+    Pointer<core.AudNodeDescriptor> descriptor,
+    Pointer<core.AudHostApi> host,
+  ) => calloc<Uint8>(1).cast();
+  static void _onDestroy(Pointer<Void> instance) => calloc.free(instance);
+  static int _onPrepare(
+    Pointer<Void> instance,
+    Pointer<core.AudPrepareInfo> info,
+  ) => AUD_OK;
+
+  static void _onProcess(
+    Pointer<Void> instance,
+    Pointer<core.AudProcessContext> context,
+  ) {
+    final emit = _host.ref.emit_message
+        .asFunction<
+          void Function(Pointer<Void>, Pointer<Void>, Pointer<core.AudMessage>)
+        >();
+    for (var e = 0; e < context.ref.num_events; e++) {
+      final event = context.ref.events[e];
+      if (event.type != AUD_EVENT_MESSAGE) continue;
+      final address = event.words[0] | (event.words[1] << 32);
+      final message = Pointer<core.AudMessage>.fromAddress(address).ref;
+      using((arena) {
+        final count = message.num_args;
+        final args = arena<core.AudMessageArg>(count + 1);
+        for (var i = 0; i < count; i++) {
+          args[i]
+            ..struct_size = sizeOf<core.AudMessageArg>()
+            ..type = message.args[i].type
+            ..size = message.args[i].size
+            ..value.h = message.args[i].value.h;
+        }
+        args[count]
+          ..struct_size = sizeOf<core.AudMessageArg>()
+          ..type = AUD_ARG_INT32
+          ..value.i = event.sample_offset;
+        final reply = arena<core.AudMessage>();
+        reply.ref
+          ..struct_size = sizeOf<core.AudMessage>()
+          ..num_args = count + 1
+          ..path = message.path
+          ..args = args;
+        emit(_host.ref.host, instance, reply);
+      });
+    }
+  }
+
+  static int _onSetString(
+    Pointer<Void> instance,
+    int key,
+    Pointer<Char> value,
+  ) {
+    final begin = _host.ref.begin_load
+        .asFunction<
+          int Function(Pointer<Void>, Pointer<Void>, Pointer<Char>)
+        >();
+    return begin(_host.ref.host, instance, value);
+  }
+
+  /// Frees the descriptor; the graph that uses it has to be disposed.
+  void dispose() {
+    calloc.free(descriptor);
+    calloc.free(vtable);
+    calloc.free(input);
+    calloc.free(key);
+    calloc.free(name);
+    calloc.free(inputId);
+    calloc.free(keyId);
+    calloc.free(typeId);
+  }
+}
+
+void messageNodeTests() {
+  group('AudGraph with loads and messages (ticket 25)', () {
+    late AudGraphFfi graph;
+    late DartMessageNode type;
+    late AudNode node;
+
+    setUp(() {
+      graph = AudGraphFfi(listen: false, maxFrames: 256);
+      type = DartMessageNode(graph.hostApi);
+      expect(type.result, AUD_OK);
+      node = graph.createNode('aud.test.messages', name: 'sampler');
+      graph.transaction((_) {});
+      graph.start();
+    });
+    tearDown(() {
+      graph.dispose();
+      type.dispose();
+    });
+
+    void render([int frames = 256]) =>
+        AudOfflineRenderer(graph).render(frames: frames);
+
+    test(
+      'a string opens a load that reports its progress and its end',
+      () async {
+        final id = graph.setString(node, 'file', 'piano.sfz');
+        expect(id, greaterThan(0));
+        final running = graph.loadOf(id)!;
+        expect(running.isRunning, isTrue);
+        expect(running.node, node.handle);
+        expect(running.name, 'piano.sfz');
+        expect(graph.loads.map((l) => l.id), [id]);
+        expect(graph.stringsOf(node), {'file': 'piano.sfz'});
+        final notifications = <AudLoadNotification>[];
+        graph.notifications.listen((n) {
+          if (n is AudLoadNotification) notifications.add(n);
+        });
+        final ended = graph.loadEnded(id);
+        DartMessageNode.progress(id, 0.5);
+        expect(
+          graph.waitLoads(timeout: const Duration(milliseconds: 10)),
+          isFalse,
+        );
+        DartMessageNode.end(id, AUD_OK);
+        expect(graph.waitLoads(node: node), isTrue);
+        graph.pump();
+        final done = await ended;
+        expect(done.succeeded, isTrue);
+        expect(done.progress, 1);
+        expect(notifications.map((n) => n.progress), [0, 0.5, 1]);
+        expect((await graph.loadEnded(id)).succeeded, isTrue);
+        expect(graph.cancelLoad(id), isFalse);
+        expect(() => graph.loadEnded(9999999), throwsArgumentError);
+        expect(graph.loadOf(9999999), isNull);
+      },
+    );
+
+    test('a load is cancelled or fails with a message', () {
+      final cancelled = graph.setString(node, 'file', 'a');
+      expect(graph.cancelLoad(cancelled), isTrue);
+      expect(DartMessageNode.cancelled(cancelled), isTrue);
+      DartMessageNode.end(cancelled, AUD_ERROR_CANCELLED);
+      expect(graph.loadOf(cancelled)!.result, AUD_ERROR_CANCELLED);
+      expect(graph.loadOf(cancelled)!.cancelled, isTrue);
+      final failed = graph.setString(node, 'file', 'b');
+      DartMessageNode.end(failed, AUD_ERROR_FAILED, 'broken');
+      expect(graph.loadOf(failed)!.message, 'broken');
+      expect(graph.loadOf(failed)!.resultName, 'AUD_ERROR_FAILED');
+    });
+
+    test(
+      'an awaited load the graph keeps no longer ends from its notification',
+      () async {
+        final id = graph.setString(node, 'file', 'first');
+        final ended = graph.loadEnded(id);
+        DartMessageNode.end(id, AUD_OK);
+        // 64 later loads push the first out of the loads the graph keeps.
+        for (var i = 0; i < 64; i++) {
+          DartMessageNode.end(graph.setString(node, 'file', 'more'), AUD_OK);
+        }
+        expect(graph.loadOf(id), isNull);
+        graph.pump();
+        final load = await ended;
+        expect(load.id, id);
+        expect(load.node, node.handle);
+        expect(load.succeeded, isTrue);
+        expect(load.progress, 1);
+      },
+    );
+
+    test('disposing the graph ends the loads that are awaited', () async {
+      final id = graph.setString(node, 'file', 'c');
+      final ended = graph.loadEnded(id);
+      graph.dispose();
+      final load = await ended;
+      expect(load.result, AUD_ERROR_CANCELLED);
+      expect(load.message, 'The graph was disposed');
+    });
+
+    test('a message reaches the node and its answer arrives', () {
+      final answers = <AudNodeMessage>[];
+      graph.messages.listen(answers.add);
+      graph.sendMessage(
+        node,
+        AudOscMessage('/region0/volume', [
+          1,
+          1 << 40,
+          0.5,
+          'x',
+          Uint8List.fromList([1, 2]),
+          true,
+          false,
+          null,
+          AudImpulse.instance,
+        ]),
+      );
+      render();
+      graph.pump();
+      expect(answers, hasLength(1));
+      expect(answers.single.node, node.handle);
+      expect(answers.single.path, '/region0/volume');
+      expect(answers.single.arguments, [
+        1,
+        1 << 40,
+        0.5,
+        'x',
+        Uint8List.fromList([1, 2]),
+        true,
+        false,
+        null,
+        AudImpulse.instance,
+        0,
+      ]);
+      expect(graph.stats.messagesDropped, 0);
+    });
+
+    test('messages are scheduled, sent as commands and through OSC', () {
+      final answers = <AudNodeMessage>[];
+      graph.messages.listen(answers.add);
+      graph.sendMessage(
+        node,
+        AudOscMessage('/later'),
+        at: const AudTimestamp.sample(300),
+        id: 4,
+      );
+      render();
+      graph.pump();
+      expect(answers, isEmpty);
+      render();
+      graph.pump();
+      expect(answers.single.arguments, [44]);
+      graph.send(
+        AudMessageCommand(node: node.handle, message: AudOscMessage('/cmd')),
+      );
+      final commands = graph.handleOsc(
+        AudOscMessage('/graph/${graph.id}/node/${node.handle}/msg/num_regions'),
+      );
+      expect(commands.single, isA<AudMessageCommand>());
+      render();
+      graph.pump();
+      expect(answers.map((a) => a.path), ['/later', '/cmd', '/num_regions']);
+    });
+
+    test('messages are refused where they cannot go', () {
+      final osc = graph.createNode('aud.graph.oscillator');
+      graph.transaction((_) {});
+      expect(
+        () => graph.sendMessage(osc, AudOscMessage('/x')),
+        throwsA(
+          isA<AudGraphException>().having(
+            (e) => e.name,
+            'name',
+            'AUD_ERROR_UNSUPPORTED',
+          ),
+        ),
+      );
+      expect(
+        () => graph.sendMessage(node, AudOscMessage('/x', [Uint8List(2000)])),
+        throwsA(isA<AudGraphException>()),
+      );
+      expect(
+        () => graph.sendMessage(
+          node,
+          AudOscMessage('/x', [AudOscTimetag.immediate]),
+        ),
+        throwsArgumentError,
+      );
+    });
+
+    test('the cache budget and the workers belong to the process', () {
+      expect(graph.cacheBudget, 256 << 20);
+      graph.cacheBudget = 1000;
+      expect(graph.cacheBudget, 1000);
+      expect(graph.cacheUsage.budget, 1000);
+      graph.cacheBudget = 256 << 20;
+      expect(() => graph.cacheBudget = -1, throwsArgumentError);
+      expect(graph.cacheUsage.workers, 2);
+      expect(graph.waitTasks(), isTrue);
+      expect(graph.waitTasks(timeout: const Duration(milliseconds: 1)), isTrue);
     });
   });
 }

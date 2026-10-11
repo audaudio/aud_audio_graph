@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "aud_graph_internal.hpp"
+#include "aud_graph_resources.hpp"
 
 using namespace aud;
 
@@ -97,6 +98,10 @@ AUD_EXPORT int32_t aud_graph_render_offline(AudGraph* graph,
       graph->offline = false;
       return result;
     }
+    // What the block asked of the workers - a sampler's streaming reads -
+    // is there before the next block, so an offline render repeats on any
+    // machine (ticket 25).
+    Resources::get().waitIdle(0);
     position += block;
     rendered += block;
   }

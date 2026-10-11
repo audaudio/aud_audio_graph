@@ -10,6 +10,7 @@
 library;
 
 export 'src/aud_audio_graph_version.dart';
+export 'src/aud_cache_usage.dart';
 export 'src/aud_graph.dart';
 export 'src/aud_graph_constants.dart';
 export 'src/aud_graph_document.dart';
@@ -21,3 +22,5 @@ export 'src/aud_graph_state.dart';
 export 'src/aud_graph_stats.dart';
 export 'src/aud_graph_transaction.dart';
 export 'src/aud_graph_transport_state.dart';
+export 'src/aud_load.dart';
+export 'src/aud_node_message.dart';

@@ -243,6 +243,12 @@ AUD_TEST(reports_the_tail_of_the_program) {
   for (int i = 0; i < 4; ++i) f.render(256);
   AUD_CHECK(f.countNotifications(AUD_NOTIFY_NODE_DONE) == 1);
   AUD_CHECK(aud_graph_output_tail(f.graph) == 200);
+  // A tail that follows what a node loaded after its prepare, like the
+  // release of the sampler (ticket 25), counts from the next commit on.
+  g_delayTail = 1000;
+  AUD_CHECK(aud_graph_output_tail(f.graph) == 200);
+  f.commit([] {});
+  AUD_CHECK(aud_graph_output_tail(f.graph) == 1100);
 }
 
 AUD_TEST(drops_a_note_on_the_tracker_cannot_hold_and_closes_the_rest) {

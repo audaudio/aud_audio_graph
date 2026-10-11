@@ -91,6 +91,9 @@ void main() {
       expect(host.nodeIdOf(999), isNull);
       expect(host.latency, 0);
       expect(host.tail, 0);
+      // No node of the document loads on a worker (ticket 25).
+      expect(host.waitLoads(), isTrue);
+      expect(host.waitLoads(timeout: const Duration(milliseconds: 1)), isTrue);
       graph.start();
       final output = AudOfflineRenderer(graph).render(frames: 4800);
       final peak = output.first.first.fold<double>(

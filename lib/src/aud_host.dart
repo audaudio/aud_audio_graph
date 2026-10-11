@@ -258,6 +258,12 @@ class AudHost {
   /// never ends.
   int get tail => bindings.aud_host_tail(_pointer);
 
+  /// Waits until the loads the document started have ended, e.g. the
+  /// instruments a sampler loads on a worker thread (ticket 25); false after
+  /// [timeout] (zero waits as long as it takes). Blocks the calling isolate.
+  bool waitLoads({Duration timeout = Duration.zero}) =>
+      bindings.aud_host_wait_loads(_pointer, timeout.inMilliseconds) == AUD_OK;
+
   // ...........................................................................
   /// The assets of the loaded document.
   List<AudHostAsset> get assets {
