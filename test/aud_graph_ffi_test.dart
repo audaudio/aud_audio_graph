@@ -1295,6 +1295,11 @@ void messageNodeTests() {
           graph.waitLoads(timeout: const Duration(milliseconds: 10)),
           isFalse,
         );
+        // Shorter than a millisecond waits one, not as long as it takes.
+        expect(
+          graph.waitLoads(timeout: const Duration(microseconds: 100)),
+          isFalse,
+        );
         DartMessageNode.end(id, AUD_OK);
         expect(graph.waitLoads(node: node), isTrue);
         graph.pump();
@@ -1304,7 +1309,16 @@ void messageNodeTests() {
         expect(notifications.map((n) => n.progress), [0, 0.5, 1]);
         expect((await graph.loadEnded(id)).succeeded, isTrue);
         expect(graph.cancelLoad(id), isFalse);
-        expect(() => graph.loadEnded(9999999), throwsArgumentError);
+        expect(
+          () => graph.loadEnded(9999999),
+          throwsA(
+            isA<ArgumentError>().having(
+              (e) => e.message,
+              'message',
+              'The graph keeps no such load',
+            ),
+          ),
+        );
         expect(graph.loadOf(9999999), isNull);
       },
     );
@@ -1430,14 +1444,39 @@ void messageNodeTests() {
       );
       expect(
         () => graph.sendMessage(node, AudOscMessage('/x', [Uint8List(2000)])),
-        throwsA(isA<AudGraphException>()),
+        throwsA(
+          isA<AudGraphException>().having(
+            (e) => e.name,
+            'name',
+            'AUD_ERROR_CAPACITY',
+          ),
+        ),
+      );
+      expect(
+        () => graph.sendMessage(
+          node,
+          AudOscMessage('/x', List.filled(AUD_GRAPH_MAX_MESSAGE_ARGS + 1, 1)),
+        ),
+        throwsA(
+          isA<AudGraphException>().having(
+            (e) => e.name,
+            'name',
+            'AUD_ERROR_CAPACITY',
+          ),
+        ),
       );
       expect(
         () => graph.sendMessage(
           node,
           AudOscMessage('/x', [AudOscTimetag.immediate]),
         ),
-        throwsArgumentError,
+        throwsA(
+          isA<ArgumentError>().having(
+            (e) => e.message,
+            'message',
+            'Not an argument of a node message',
+          ),
+        ),
       );
     });
 
@@ -1447,10 +1486,25 @@ void messageNodeTests() {
       expect(graph.cacheBudget, 1000);
       expect(graph.cacheUsage.budget, 1000);
       graph.cacheBudget = 256 << 20;
-      expect(() => graph.cacheBudget = -1, throwsArgumentError);
+      expect(
+        () => graph.cacheBudget = -1,
+        throwsA(
+          isA<ArgumentError>().having((e) => e.message, 'message', 'Negative'),
+        ),
+      );
       expect(graph.cacheUsage.workers, 2);
       expect(graph.waitTasks(), isTrue);
       expect(graph.waitTasks(timeout: const Duration(milliseconds: 1)), isTrue);
+      expect(
+        graph.waitTasks(timeout: const Duration(microseconds: 100)),
+        isTrue,
+      );
+      expect(
+        () => graph.waitTasks(timeout: const Duration(seconds: -1)),
+        throwsA(
+          isA<ArgumentError>().having((e) => e.message, 'message', 'Negative'),
+        ),
+      );
     });
   });
 }

@@ -10,9 +10,11 @@ import 'aud_graph_constants.dart' as bindings;
 import 'aud_graph_state.dart';
 
 // #############################################################################
-/// What the realtime thread reports to the control thread:
-/// `AudGraphNotification` of the engine. [toOsc] gives the notification of
-/// the OSC vocabulary of `aud_audio_core` where one exists (osc-001).
+/// What the engine reports to the control thread: `AudGraphNotification`
+/// of the engine, from the realtime thread, or of a load, which the control
+/// thread and the workers report (ticket 25). [toOsc] gives the
+/// notification of the OSC vocabulary of `aud_audio_core` where one exists
+/// (osc-001).
 sealed class AudGraphNotification {
   const AudGraphNotification({required this.samplePosition});
 
@@ -99,7 +101,8 @@ final class AudNodeDoneNotification extends AudGraphNotification {
 }
 
 // #############################################################################
-/// A diagnostic of a block: late events, dropped entries, an overload.
+/// A diagnostic of a block: late events, dropped entries, an overload, or
+/// what a node reported (ticket 25).
 final class AudDiagnosticNotification extends AudGraphNotification {
   /// Creates the notification.
   const AudDiagnosticNotification({
@@ -136,6 +139,9 @@ final class AudDiagnosticNotification extends AudGraphNotification {
     AUD_ERROR_CAPACITY => 'a note tracker was full: note ons were dropped',
     AUD_ERROR_STATE => 'a node is parked for its state: its events wait',
     AUD_ERROR_OVERLOAD => 'the block took $value ns, longer than it lasts',
+    AUD_ERROR_UNSUPPORTED when node != 0 =>
+      'node $node refused what it cannot do on the audio thread, '
+          'e.g. a message',
     AUD_ERROR_UNSUPPORTED => 'the transport refused a request',
     AUD_ERROR_UNDERFLOW => 'a stream could not deliver in time: silence played',
     bindings.AUD_GRAPH_ERROR_REALTIME_VIOLATION =>
@@ -248,8 +254,8 @@ final class AudTimeResetNotification extends AudGraphNotification {
 }
 
 // #############################################################################
-/// A load of a node began, progressed or ended (ticket 25); `AudGraph.load`
-/// says more.
+/// A load of a node began, progressed or ended (ticket 25);
+/// `AudGraph.loadOf` says more.
 final class AudLoadNotification extends AudGraphNotification {
   /// Creates the notification.
   const AudLoadNotification({

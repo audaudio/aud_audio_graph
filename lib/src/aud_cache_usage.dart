@@ -5,7 +5,7 @@
 // found in the LICENSE file in the root of this package.
 
 // #############################################################################
-/// The resources of the process (lifecycle-001, ticket 25): the caches the
+/// The resources of the process (lifecycle-002, ticket 25): the caches the
 /// packages registered, the sample cache budget they share, the trims and
 /// the worker threads.
 class AudCacheUsage {
@@ -20,6 +20,7 @@ class AudCacheUsage {
     this.tasks = 0,
   });
 
+  // ...........................................................................
   /// The registered caches.
   final int caches;
 
@@ -44,6 +45,7 @@ class AudCacheUsage {
   /// The share of the budget the caches hold, 0 to 1 and beyond.
   double get load => budget == 0 ? 0 : bytes / budget;
 
+  // ...........................................................................
   /// The usage as JSON.
   Map<String, Object?> toJson() => {
     'caches': caches,

@@ -359,9 +359,40 @@ void main() {
         expect(
           () =>
               AudOscMessage('/x', [AudOscTimetag.immediate]).writeNative(arena),
-          throwsArgumentError,
+          throwsA(
+            isA<ArgumentError>().having(
+              (e) => e.message,
+              'message',
+              'Not an argument of a node message',
+            ),
+          ),
         );
       });
+    });
+  });
+
+  group('Duration.timeoutMs', () {
+    const cases = [
+      (Duration.zero, 0),
+      (Duration(microseconds: 100), 1),
+      (Duration(milliseconds: 1), 1),
+      (Duration(microseconds: 1001), 2),
+      (Duration(seconds: 2), 2000),
+      (Duration(days: 50), 0xFFFFFFFF),
+    ];
+    for (final (timeout, ms) in cases) {
+      test('$timeout waits $ms ms', () {
+        expect(timeout.timeoutMs, ms);
+      });
+    }
+
+    test('a negative timeout throws', () {
+      expect(
+        () => const Duration(milliseconds: -1).timeoutMs,
+        throwsA(
+          isA<ArgumentError>().having((e) => e.message, 'message', 'Negative'),
+        ),
+      );
     });
   });
 

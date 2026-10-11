@@ -31,16 +31,36 @@
 - Add the native fixes of the ticket 25 review
 
 - Message slots come back when a node with a fixed block is prepared again, ends its fade before its block is full or is destroyed while its wrapper holds a message
+
 - A cache budget above INT64_MAX is INT64_MAX, no limit: UINT64_MAX no longer trims every cache
+
 - The byte checks of messages and replies take no sum that wraps on a 32-bit target
+
 - An offline render waits for the workers before its first block too
+
 - The commit that removes a node cancels its loads; a load that a destroyed node, or one whose create or prepare failed, leaves running ends as AUD_ERROR_CANCELLED; a load begun in create or the first prepare carries the handle of the new node, which a failed node spends
+
 - A load keeps one waiting progress notification; a progress beyond notification_capacity is dropped and counted, a begin or an end never
+
 - A graph counts the tasks its nodes post and waits only for them when it is destroyed
+
 - Messages to and from nodes: at most AUD_GRAPH_MAX_MESSAGE_ARGS (16) arguments and AUD_GRAPH_MESSAGE_BYTES (1000) in the layout of a reply, tags and values counted; AUD_ERROR_CAPACITY beyond them, a reply beyond them is dropped and counted
+
 - The header explains the reports of nodes, the dropped replies and the merged reports of AUD_NOTIFY_DIAGNOSTIC and cites lifecycle-002 and osc-002
+
 - Helpers for the loads, constants for the progress throttle and one wakeListener; a load notification is queued under the lock of its load
+
 - Native tests of every fix under ASan/UBSan, RealtimeSanitizer and ThreadSanitizer
+
+- Add the Dart and doc fixes of the ticket 25 review
+
+- README.md names the new C API and Dart members: aud_tasks_wait_idle, aud_cache_budget, aud_cache_usage, AUD_NOTIFY_MESSAGE, the message limits and capacities, messages_dropped, AUD_GRAPH_VIOLATION_CONTROL; loads, loadOf, cancelLoad, waitLoads, waitTasks, AudHost.waitLoads, AudNodeMessage, AudLoadNotification, AudMessageNotification
+- README.de.md says in German what README.md says: ABI 0.4, the resources of the process, the headless host with its loads, the Dart API and the tests
+- A diagnostic AUD_ERROR_UNSUPPORTED of a node reads as a refusal of the node, not of the transport
+- waitLoads, waitTasks and AudHost.waitLoads round a timeout up to milliseconds: one under a millisecond waits one, not as long as it takes; a negative one throws an ArgumentError
+- sendMessage documents the limits of a message and what it throws
+- The docs cite lifecycle-002 and osc-002 and name loadOf, the message of a load that ended well, the notifications of the loads and the control calls the watchdog counts
+- The error tests check the type and the message; AudCacheUsage and AudNodeMessage get their landmarks
 
 ## 0.4.0 - 2026-10-09
 

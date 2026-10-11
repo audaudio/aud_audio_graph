@@ -7,7 +7,7 @@
 import 'package:aud_audio_core/aud_audio_core.dart';
 
 // #############################################################################
-/// A load of a node on a worker thread (lifecycle-001, ticket 25): e.g. the
+/// A load of a node on a worker thread (lifecycle-002, ticket 25): e.g. the
 /// SFZ file a sampler loads after a string setting named it.
 class AudLoad {
   /// Creates the load.
@@ -53,7 +53,9 @@ class AudLoad {
   /// The progress from 0 to 1.
   final double progress;
 
-  /// Why the load failed; empty otherwise.
+  /// Why the load failed, or what a load that ended well could not do, e.g.
+  /// the samples a sampler did not find; empty when there is nothing to
+  /// say.
   final String message;
 
   /// Whether the load was asked to stop.

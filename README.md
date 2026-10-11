@@ -43,24 +43,38 @@ The graphs of a process share what the packages need for their assets
 (lifecycle-002), through the host api of ABI 0.4:
 
 - Two worker threads with a lock-free task queue that the control thread,
-  the workers and the audio thread may post to. An offline render waits
-  for the workers after every block, so it repeats.
+  the workers and the audio thread may post to. A graph counts the tasks
+  of its nodes: when it is destroyed it waits for them, not for those of
+  other graphs. `aud_tasks_wait_idle` waits for every task of the process;
+  an offline render waits like this before its first block and after every
+  block, so it repeats.
 - Loads with ids: a node opens a load in `set_string`, which returns its
   id, reports progress and ends it with a result - done, failed with a
   message, or cancelled. A graph keeps the running loads and the last 64
   (`aud_graph_loads`, `aud_graph_load_info`, `aud_graph_cancel_load`,
-  `aud_graph_wait_loads`, `AUD_NOTIFY_LOAD`).
+  `aud_graph_wait_loads`) and reports them as `AUD_NOTIFY_LOAD`; a
+  progress that still waits gives way to the next one. Removing a node
+  cancels its loads, and a load its node leaves running ends as cancelled.
 - One sample cache budget for the process, 256 MB by default
-  (`aud_cache_set_budget`): packages register their caches and report
-  their bytes; when the process holds more, a worker asks the largest
-  cache to free what nobody uses, the least recently used first. A
-  smaller budget trims at once.
+  (`aud_cache_set_budget`, `aud_cache_budget`): packages register their
+  caches and report their bytes; when the process holds more, a worker
+  asks the largest cache to free what nobody uses, the least recently used
+  first. A smaller budget trims at once. `aud_cache_usage` fills an
+  `AudCacheUsage` with the caches, the budget, the bytes, the trims and
+  the workers.
 - Reports of a node from the audio thread, summed per block into
-  `AUD_NOTIFY_DIAGNOSTIC`, e.g. a stream that fell behind.
+  `AUD_NOTIFY_DIAGNOSTIC`, e.g. a stream that fell behind. A control call
+  of the host api on the audio thread is a watchdog violation of the kind
+  `AUD_GRAPH_VIOLATION_CONTROL`.
 - Messages to nodes (osc-002): `aud_graph_send_message` copies an OSC
-  message into a slot of the graph and delivers it as an
-  `AUD_EVENT_MESSAGE` event, ordered with the other events; the node's
-  answers come back through `aud_graph_take_messages`.
+  message of at most 16 arguments and 1000 bytes
+  (`AUD_GRAPH_MAX_MESSAGE_ARGS`, `AUD_GRAPH_MESSAGE_BYTES`) into one of the
+  `message_capacity` slots of the graph (`AudGraphConfig`) and delivers it
+  as an `AUD_EVENT_MESSAGE` event, ordered with the other events. The
+  node's answers, within the same limits, wait in a queue of
+  `reply_capacity` for `aud_graph_take_messages`, announced by
+  `AUD_NOTIFY_MESSAGE`; an answer beyond the limits or the queue counts in
+  `messages_dropped` of `AudGraphStats`.
 - The engine reads the tail of a node at every commit, so that a tail may
   follow what the node loaded.
 
@@ -76,8 +90,9 @@ The C API `aud_host_*` runs a graph without Dart, as the plugin shells do
 - Presets apply in the order strings, state blob, parameters - the strings
   in the order of the node's string keys -; the host keeps every
   parameter value. A string that starts a load is fine: the host waits
-  for the loads of a document with `aud_host_wait_loads`. `aud_host_save` writes the document back
-  with the current parameters, strings and state blobs.
+  for the loads of a document with `aud_host_wait_loads`. `aud_host_save`
+  writes the document back with the current parameters, strings and state
+  blobs.
 - Assets: the document's `assets` table maps ids to paths, a string
   `asset:<id>` reaches the node as the resolved path;
   `aud_host_set_asset_path` relinks.
@@ -119,8 +134,8 @@ in front of every block with a click detector, route changes while notes
 play, a full scheduler and note tracker, and a stream rendering on its own
 thread. The debug watchdog counts allocations, frees and log calls on the
 audio thread - in an app those of the graph's own library and every call of
-the host api; `AudGraph.watchdogEnabled` and `watchdogViolations` read
-it. It is on in the native tests and in an app that sets
+the host api; `AudGraphFfi.watchdogEnabled` and `watchdogViolations`
+read it. It is on in the native tests and in an app that sets
 
 ```yaml
 hooks:
@@ -152,7 +167,7 @@ graph.start();
 await graph.adopted(revision);                           // the realtime thread runs it
 graph.sendEvent(osc, noteOn, at: AudTimestamp.beat(4));  // scheduled, pre-delivered by its lead
 graph.transport(const AudTransportRequest.start());
-graph.notifications.listen((n) => ...);                  // revisions, diagnostics, events
+graph.notifications.listen((n) => ...);                  // revisions, diagnostics, events, loads
 graph.readTap(tap, frames: 512);                         // the recent signal of a tap node
 
 final wav = AudOfflineRenderer(graph).renderWav(frames: 48000);
@@ -163,11 +178,22 @@ final copy = AudGraph.fromDocument(document);       // an AudGraphFfi
 
 final id = graph.setString(sampler, 'sfz_file', path);   // a load on a worker
 final load = await graph.loadEnded(id);                  // AudLoad: result, progress, time
+print(graph.loads);                                      // the running loads, the last 64 ended
+print(graph.loadOf(id)?.message);                        // why it failed, what it could not do
+graph.cancelLoad(id);                                    // false once it ended
+graph.waitLoads(timeout: const Duration(seconds: 5));    // blocks: tests and offline renders
 graph.sendMessage(sampler, AudOscMessage('/num_regions'));
-graph.messages.listen((m) => print(m.arguments));        // the node's answers
+graph.messages.listen((m) => print(m.arguments));        // AudNodeMessage: the node's answers
+print(graph.stats.messagesDropped);                      // answers beyond the limits or the queue
 graph.cacheBudget = 128 << 20;                           // of the process
-print(graph.cacheUsage.bytes);
+print(graph.cacheUsage.bytes);                           // AudCacheUsage
+graph.waitTasks();                                       // every task of the process
+host.waitLoads();                                        // the loads of the host's document
 ```
+
+The notifications carry `AudLoadNotification` for the loads and
+`AudMessageNotification` for the answers of a block; `AudGraphOptions`
+sets `messageCapacity` and `replyCapacity`.
 
 `graph.send(command)` takes the typed commands of the core and
 `graph.handleOsc(message)` the OSC messages of osc-001; DSP packages

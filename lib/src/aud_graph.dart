@@ -258,7 +258,7 @@ abstract interface class AudGraph {
   int setString(AudNode node, Object key, String value);
 
   // ...........................................................................
-  // Loads (lifecycle-001, ticket 25)
+  // Loads (lifecycle-002, ticket 25)
 
   /// The loads the graph keeps: those that run and the last 64 that ended,
   /// the oldest first.
@@ -269,7 +269,8 @@ abstract interface class AudGraph {
 
   /// Asks the running load [id] to stop; the node ends it with
   /// `AUD_ERROR_CANCELLED` as soon as it looks. False when the load ended
-  /// or is unknown.
+  /// or is unknown. Removing a node cancels its loads too; a load its node
+  /// leaves running when it goes ends as `AUD_ERROR_CANCELLED`.
   bool cancelLoad(int id);
 
   /// Completes with the load [id] once it has ended - done, failed or
@@ -279,13 +280,14 @@ abstract interface class AudGraph {
   Future<AudLoad> loadEnded(int id);
 
   /// Waits until no load of [node] (null: of any node) runs; false after
-  /// [timeout] (zero waits as long as it takes). It blocks the calling
-  /// isolate - an app awaits [loadEnded] instead; tests and offline renders
-  /// use it.
+  /// [timeout]. Zero waits as long as it takes, a timeout shorter than a
+  /// millisecond waits one, a negative one throws an [ArgumentError]. It
+  /// blocks the calling isolate - an app awaits [loadEnded] instead; tests
+  /// and offline renders use it.
   bool waitLoads({AudNode? node, Duration timeout = Duration.zero});
 
   // ...........................................................................
-  // Messages of nodes (osc-001, ticket 25)
+  // Messages of nodes (osc-002, ticket 25)
 
   /// Sends [message] to [node], which takes messages: its address is the
   /// path below the node's route, e.g. `/region0/ampeg_attack` for the
@@ -293,6 +295,18 @@ abstract interface class AudGraph {
   /// on the audio thread at [at], ordered with its events; an [id] above
   /// zero lets it be cancelled while it waits. The answers arrive on
   /// [messages].
+  ///
+  /// A message carries at most 16 arguments (`AUD_GRAPH_MAX_MESSAGE_ARGS`)
+  /// and takes at most 1000 bytes (`AUD_GRAPH_MESSAGE_BYTES`): its address
+  /// with a terminator, then per argument a type tag and the value - 4
+  /// bytes of an int that fits 32 bits or of a double, 8 of a larger int, a
+  /// text with its terminator, a blob with 4 bytes of size. Throws an
+  /// [AudGraphException]: `AUD_ERROR_CAPACITY` beyond these limits or while
+  /// every slot of the graph waits for its node, `AUD_ERROR_UNSUPPORTED` for
+  /// a node that takes no messages, `AUD_ERROR_INVALID_ARGUMENT` for an
+  /// address without a leading slash, the codes of [sendEvent] otherwise;
+  /// an [ArgumentError] for an argument a node message cannot carry, e.g. a
+  /// timetag.
   void sendMessage(
     AudNode node,
     AudOscMessage message, {
@@ -304,19 +318,20 @@ abstract interface class AudGraph {
   Stream<AudNodeMessage> get messages;
 
   // ...........................................................................
-  // The resources of the process (lifecycle-001, ticket 25)
+  // The resources of the process (lifecycle-002, ticket 25)
 
   /// The sample cache budget of the process in bytes, which every graph of
   /// the process shares; 256 MB until an app sets one. A smaller budget
-  /// trims the caches at once.
+  /// trims the caches at once; a negative one throws an [ArgumentError].
   int get cacheBudget;
   set cacheBudget(int bytes);
 
   /// The caches, the budget and the worker threads of the process.
   AudCacheUsage get cacheUsage;
 
-  /// Waits until no task of the worker threads waits or runs; false after
-  /// [timeout] (zero waits as long as it takes). Blocks like [waitLoads].
+  /// Waits until no task of the worker threads waits or runs - of any graph
+  /// of the process; false after [timeout], which counts like the timeout
+  /// of [waitLoads]. Blocks like [waitLoads].
   bool waitTasks({Duration timeout = Duration.zero});
 
   /// Sends [request] to the transport.
@@ -363,13 +378,15 @@ abstract interface class AudGraph {
   /// Destroys the graph and every instance; the stream has to be stopped.
   void dispose();
 
-  /// The notifications of the realtime thread, as [pump] takes them.
+  /// The notifications of the engine - of the realtime thread and of the
+  /// loads -, as [pump] takes them.
   Stream<AudGraphNotification> get notifications;
 
   /// Takes the waiting notifications, completes the futures of [adopted]
-  /// and adds them to [notifications]; returns their number. The listener
-  /// calls this when the realtime thread wakes it; tests call it after
-  /// rendering offline.
+  /// and of [loadEnded] and adds them to [notifications], takes the
+  /// messages of the nodes for [messages]; returns the number of
+  /// notifications. The listener calls this when the engine wakes it;
+  /// tests call it after rendering offline.
   int pump();
 
   /// The most recent [frames] frames of [channel] of the tap node [tap];

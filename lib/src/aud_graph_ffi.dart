@@ -690,13 +690,14 @@ class AudGraphFfi implements AudGraph {
   }
 
   /// Waits until no load of [node] (null: of any node) runs; false after
-  /// [timeout]. Blocks the calling isolate.
+  /// [timeout], rounded up to milliseconds; a negative one throws an
+  /// [ArgumentError]. Blocks the calling isolate.
   @override
   bool waitLoads({AudNode? node, Duration timeout = Duration.zero}) =>
       bindings.aud_graph_wait_loads(
         _pointer,
         node?.handle ?? 0,
-        timeout.inMilliseconds,
+        timeout.timeoutMs,
       ) ==
       AUD_OK;
 
@@ -704,6 +705,7 @@ class AudGraphFfi implements AudGraph {
   // Messages of nodes (ticket 25)
 
   /// Sends [message] to [node] at [at]; the answers arrive on [messages].
+  /// [AudGraph.sendMessage] names the limits of a message and what throws.
   @override
   void sendMessage(
     AudNode node,
@@ -758,10 +760,11 @@ class AudGraphFfi implements AudGraph {
     }
   }
 
-  /// Waits until no task of the worker threads waits or runs.
+  /// Waits until no task of the worker threads waits or runs; [timeout]
+  /// counts like the timeout of [waitLoads].
   @override
   bool waitTasks({Duration timeout = Duration.zero}) =>
-      bindings.aud_tasks_wait_idle(timeout.inMilliseconds) == AUD_OK;
+      bindings.aud_tasks_wait_idle(timeout.timeoutMs) == AUD_OK;
 
   /// Sends [request] to the transport.
   @override
@@ -930,14 +933,16 @@ class AudGraphFfi implements AudGraph {
   // ...........................................................................
   // Notifications
 
-  /// The notifications of the realtime thread, as [pump] takes them.
+  /// The notifications of the engine - of the realtime thread and of the
+  /// loads -, as [pump] takes them.
   @override
   Stream<AudGraphNotification> get notifications => _notifications.stream;
 
   /// Takes the waiting notifications, completes the futures of [adopted]
-  /// and adds them to [notifications]; returns their number. The listener
-  /// calls this when the realtime thread wakes it; tests call it after
-  /// rendering offline.
+  /// and of [loadEnded] and adds them to [notifications], takes the
+  /// messages of the nodes for [messages]; returns the number of
+  /// notifications. The listener calls this when the engine wakes it;
+  /// tests call it after rendering offline.
   @override
   int pump() {
     if (isDisposed) return 0;
@@ -1038,8 +1043,9 @@ class AudGraphFfi implements AudGraph {
   /// `watchdog: true` of aud_audio_graph (ticket 20).
   static bool get watchdogEnabled => bindings.aud_graph_watchdog_enabled() != 0;
 
-  /// The allocations, frees and log calls the watchdog caught on rendering
-  /// threads of the process since [resetWatchdog]; 0 without the watchdog.
+  /// The allocations, frees, log calls and control calls of the host api
+  /// the watchdog caught on rendering threads of the process since
+  /// [resetWatchdog]; 0 without the watchdog.
   static int get watchdogViolations => bindings.aud_graph_watchdog_violations();
 
   /// Zeroes [watchdogViolations].

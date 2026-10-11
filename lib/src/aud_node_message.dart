@@ -7,7 +7,7 @@
 import 'package:aud_audio_core/aud_audio_core.dart';
 
 // #############################################################################
-/// A message a node sent to the control thread (osc-001, ticket 25), e.g.
+/// A message a node sent to the control thread (osc-002, ticket 25), e.g.
 /// the answer of a sampler to a message of `AudGraph.sendMessage`: its path
 /// below the node's route and its arguments.
 class AudNodeMessage {
@@ -18,6 +18,7 @@ class AudNodeMessage {
     this.samplePosition = 0,
   });
 
+  // ...........................................................................
   /// The handle of the node.
   final int node;
 
@@ -34,6 +35,7 @@ class AudNodeMessage {
   /// The arguments.
   List<Object?> get arguments => message.arguments;
 
+  // ...........................................................................
   /// The message with the full address of the node in [graph], e.g.
   /// `/graph/1/node/2/msg/num_regions`, for an OSC server.
   AudOscMessage toOsc(int graph) => AudOscMessage(

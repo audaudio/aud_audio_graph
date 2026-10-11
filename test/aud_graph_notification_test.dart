@@ -94,6 +94,16 @@ void main() {
         ).name,
         'AUD_GRAPH_ERROR_REALTIME_VIOLATION',
       );
+      // A node reports what it refused, e.g. a message of the sampler.
+      expect(
+        const AudDiagnosticNotification(
+          code: AUD_ERROR_UNSUPPORTED,
+          count: 1,
+          node: 3,
+          samplePosition: 0,
+        ).message,
+        'node 3 refused what it cannot do on the audio thread, e.g. a message',
+      );
       final osc = const AudDiagnosticNotification(
         code: AUD_ERROR_LATE,
         count: 3,

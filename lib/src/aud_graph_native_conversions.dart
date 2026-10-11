@@ -292,6 +292,22 @@ extension AudOscMessageToNative on AudOscMessage {
   }
 }
 
+// #############################################################################
+/// Writes a timeout as the milliseconds of the waits of the C API
+/// (ticket 25): `aud_graph_wait_loads`, `aud_host_wait_loads` and
+/// `aud_tasks_wait_idle`, where 0 waits as long as it takes.
+extension AudTimeoutToNative on Duration {
+  /// The milliseconds of the timeout, rounded up: zero stays zero, a
+  /// timeout shorter than a millisecond waits one, a longer one than the C
+  /// API counts waits as long as it can (`0xFFFFFFFF` ms). Throws an
+  /// [ArgumentError] for a negative timeout.
+  int get timeoutMs {
+    if (isNegative) throw ArgumentError.value(this, 'timeout', 'Negative');
+    final rest = inMicroseconds % Duration.microsecondsPerMillisecond;
+    return (inMilliseconds + (rest == 0 ? 0 : 1)).clamp(0, 0xFFFFFFFF);
+  }
+}
+
 // The text of a fixed char array: up to its terminator, at most [length].
 String _text(Array<Char> chars, int length) {
   final bytes = <int>[];
