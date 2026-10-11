@@ -47,15 +47,18 @@ void Resources::detach() {
   running_.store(false, std::memory_order_release);
 }
 
-int32_t Resources::post(const AudTask& task) {
+int32_t Resources::post(const AudTask& task, std::atomic<uint32_t>* owner) {
   if (task.struct_size < sizeof(AudTask) || task.run == nullptr) {
     return AUD_ERROR_INVALID_ARGUMENT;
   }
   if (!running_.load(std::memory_order_acquire)) return AUD_ERROR_STATE;
+  // The counts rise before the push: a worker may run the task at once.
   pending_.fetch_add(1, std::memory_order_acq_rel);
-  if (!tasks_.push(task)) {
+  if (owner != nullptr) owner->fetch_add(1, std::memory_order_acq_rel);
+  if (!tasks_.push(QueuedTask{task, owner})) {
     // No notification here - the caller may be the realtime thread; a
-    // waiter of waitIdle looks at the count every millisecond.
+    // waiter looks at the counts every millisecond.
+    if (owner != nullptr) owner->fetch_sub(1, std::memory_order_acq_rel);
     pending_.fetch_sub(1, std::memory_order_acq_rel);
     return AUD_ERROR_QUEUE_FULL;
   }
@@ -65,10 +68,15 @@ int32_t Resources::post(const AudTask& task) {
 
 void Resources::workerLoop() {
   for (;;) {
-    AudTask task{};
-    if (tasks_.pop(task)) {
-      task.run(task.user);
-      if (pending_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+    QueuedTask queued;
+    if (tasks_.pop(queued)) {
+      queued.task.run(queued.task.user);
+      // A graph may go as soon as its count reaches zero: nothing of it is
+      // touched after the decrement, the notification is the process's.
+      bool idle = queued.owner != nullptr &&
+                  queued.owner->fetch_sub(1, std::memory_order_acq_rel) == 1;
+      idle = pending_.fetch_sub(1, std::memory_order_acq_rel) == 1 || idle;
+      if (idle) {
         std::lock_guard<std::mutex> lock(idleMutex_);
         idle_.notify_all();
       }
@@ -86,15 +94,25 @@ void Resources::workerLoop() {
 }
 
 bool Resources::waitIdle(uint32_t timeoutMs) {
+  return waitZero(pending_, timeoutMs);
+}
+
+bool Resources::waitTasks(const std::atomic<uint32_t>& owner,
+                          uint32_t timeoutMs) {
+  return waitZero(owner, timeoutMs);
+}
+
+bool Resources::waitZero(const std::atomic<uint32_t>& count,
+                         uint32_t timeoutMs) {
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
   std::unique_lock<std::mutex> lock(idleMutex_);
-  while (pending_.load(std::memory_order_acquire) != 0) {
+  while (count.load(std::memory_order_acquire) != 0) {
     if (timeoutMs != 0 && std::chrono::steady_clock::now() >= deadline) {
       return false;
     }
-    // The last task notifies; a refused post does not, so look again
-    // every millisecond.
+    // The last task of a count notifies; a refused post does not, so look
+    // again every millisecond.
     idle_.wait_for(lock, std::chrono::milliseconds(1));
   }
   return true;
@@ -157,8 +175,11 @@ void Resources::cacheChanged(void* cache, int64_t delta) {
 }
 
 // A smaller budget trims at once, on the calling thread: without a graph
-// there is no worker to do it.
+// there is no worker to do it. The budget is compared with the signed bytes
+// of the caches, so it stays at most INT64_MAX: UINT64_MAX would turn into
+// -1 there and trim everything.
 void Resources::setBudget(uint64_t bytes) {
+  bytes = std::min<uint64_t>(bytes, static_cast<uint64_t>(INT64_MAX));
   budget_.store(bytes, std::memory_order_release);
   if (total_.load(std::memory_order_acquire) > static_cast<int64_t>(bytes)) trim();
 }

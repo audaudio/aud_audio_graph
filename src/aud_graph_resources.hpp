@@ -4,12 +4,14 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
-// The resources one process shares between its graphs (lifecycle-001,
+// The resources one process shares between its graphs (lifecycle-002,
 // ticket 25): the worker threads that run the tasks of the packages - the
 // loads, the streaming reads, the frees -, and the sample cache budget with
 // the caches the packages register. The workers start with the first graph
 // and stop after the last one; the caches and the budget belong to the
-// process, since the packages share what they load between graphs.
+// process, since the packages share what they load between graphs. Each
+// graph counts the tasks its nodes post, so that it can wait for them when
+// it goes without waiting for those of the other graphs.
 
 #ifndef AUD_GRAPH_RESOURCES_HPP
 #define AUD_GRAPH_RESOURCES_HPP
@@ -114,6 +116,13 @@ class MpmcQueue {
   alignas(64) std::atomic<size_t> dequeue_{0};
 };
 
+// A task in the queue with the counter of the graph that posted it, NULL
+// for a task of the process itself.
+struct QueuedTask {
+  AudTask task{};
+  std::atomic<uint32_t>* owner = nullptr;
+};
+
 // A cache a package registered.
 struct CacheSlot {
   std::atomic<void*> cache{nullptr};
@@ -132,12 +141,17 @@ class Resources {
   void attach();
   void detach();
 
-  // [any thread] Queues a task; AUD_ERROR_STATE without workers.
-  int32_t post(const AudTask& task);
+  // [any thread] Queues a task; AUD_ERROR_STATE without workers. `owner`,
+  // the task counter of the graph that posts it, counts it until it ran.
+  int32_t post(const AudTask& task, std::atomic<uint32_t>* owner = nullptr);
 
   // [control, offline] Waits until no task waits or runs; false on a
   // timeout (0 waits as long as it takes).
   bool waitIdle(uint32_t timeoutMs);
+
+  // [control] Waits until no task that `owner` counts waits or runs; false
+  // on a timeout (0 waits as long as it takes).
+  bool waitTasks(const std::atomic<uint32_t>& owner, uint32_t timeoutMs);
 
   // [control] The caches.
   int32_t registerCache(const AudCacheVTable* vtable, void* cache);
@@ -156,11 +170,12 @@ class Resources {
  private:
   Resources();
   void workerLoop();
+  bool waitZero(const std::atomic<uint32_t>& count, uint32_t timeoutMs);
   void requestTrim();
   static void trimTask(void* user);
   void trim();
 
-  MpmcQueue<AudTask> tasks_{kTaskQueueCapacity};
+  MpmcQueue<QueuedTask> tasks_{kTaskQueueCapacity};
   AudSemaphore wake_;
   std::vector<std::thread> workers_;
   std::mutex lifecycle_;

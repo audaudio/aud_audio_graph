@@ -11,8 +11,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -29,7 +31,8 @@ namespace {
 // ............................................................................
 // aud.test.loader: every string starts a load on a worker. The task reports
 // half of the progress and waits for the gate or a cancellation; a value
-// "fail" ends with an error.
+// "fail" ends with an error, a value "stuck" opens a load that nothing
+// ends.
 
 std::atomic<bool> g_gate{true};
 
@@ -76,7 +79,7 @@ void loaderProcess(void*, const AudProcessContext* context) {
 int32_t loaderSetString(void* instance, uint32_t, const char* value) {
   const AudHostApi* host = static_cast<LoaderNode*>(instance)->host;
   const int32_t load = host->begin_load(host->host, instance, value);
-  if (load <= 0) return load;
+  if (load <= 0 || std::strcmp(value, "stuck") == 0) return load;
   auto* job = new LoadJob{host, load, std::strcmp(value, "fail") == 0};
   const AudTask task{sizeof(AudTask), 0, loadTask, job};
   const int32_t posted = host->post_task(host->host, &task);
@@ -125,21 +128,111 @@ const AudNodeDescriptor kLoaderDescriptor = {
 };
 
 // ............................................................................
+// aud.test.eager: begins a load in its create and another in its first
+// prepare and ends neither; with g_eagerFails 1 its create fails after the
+// first load, with 2 its prepare fails after the second.
+
+std::atomic<int> g_eagerFails{0};
+int32_t g_eagerLoads[2] = {0, 0};
+
+struct EagerNode {
+  const AudHostApi* host;
+  bool prepared;
+};
+
+void* eagerCreate(const AudNodeDescriptor*, const AudHostApi* host) {
+  auto* node = new EagerNode{host, false};
+  g_eagerLoads[0] = host->begin_load(host->host, node, "create");
+  if (g_eagerFails.load() == 1) {
+    delete node;
+    return nullptr;
+  }
+  return node;
+}
+void eagerDestroy(void* instance) { delete static_cast<EagerNode*>(instance); }
+int32_t eagerPrepare(void* instance, const AudPrepareInfo*) {
+  auto* node = static_cast<EagerNode*>(instance);
+  if (node->prepared) return AUD_OK;
+  node->prepared = true;
+  g_eagerLoads[1] = node->host->begin_load(node->host->host, node, "prepare");
+  return g_eagerFails.load() == 2 ? AUD_ERROR_FAILED : AUD_OK;
+}
+
+const AudNodeVTable kEagerVTable = {
+    sizeof(AudNodeVTable), eagerCreate, eagerDestroy, eagerPrepare,
+    nullptr,               nullptr,     loaderProcess, nullptr,
+    nullptr,               nullptr,     nullptr,       nullptr,
+};
+const AudNodeDescriptor kEagerDescriptor = {
+    sizeof(AudNodeDescriptor),
+    AUD_ABI_VERSION_MAJOR,
+    AUD_ABI_VERSION_MINOR,
+    1,
+    "aud.test.eager",
+    "Eager",
+    "Test",
+    AUD_NODE_CAP_VARIABLE_BLOCK,
+    0,
+    0,
+    1,
+    nullptr,
+    kOut,
+    0,
+    0,
+    nullptr,
+    nullptr,
+    0,
+    0,
+    nullptr,
+    nullptr,
+    &kEagerVTable,
+};
+
+// ............................................................................
 // aud.test.echo: answers every message with its path and its arguments
 // plus the sample offset; reports an underflow for every note on; with
 // g_echoPost set it posts a task from the audio thread; with
-// g_echoControl it calls begin_load there, which the watchdog catches.
+// g_echoControl it calls begin_load there, which the watchdog catches; with
+// g_echoHugeBlob it answers each block with a blob that claims almost
+// 4 GiB.
 
 std::atomic<uint32_t> g_tasksRun{0};
 std::atomic<bool> g_echoPost{false};
 std::atomic<bool> g_echoControl{false};
+std::atomic<bool> g_echoHugeBlob{false};
 std::vector<uint32_t> g_seenTasks;  // reserved, appended by the audio thread
+const uint8_t kOneByte[1] = {7};
 
 struct EchoNode {
   const AudHostApi* host;
 };
 
 void countTask(void*) { g_tasksRun.fetch_add(1, std::memory_order_acq_rel); }
+
+// Counts like countTask, after a while: a task that is still running when
+// the next step of a test begins.
+void slowCountTask(void*) {
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  countTask(nullptr);
+}
+
+// Counts like countTask once the gate opens.
+void gatedCountTask(void*) {
+  while (!g_gate.load(std::memory_order_acquire)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  countTask(nullptr);
+}
+
+// A blob whose size wraps a 32-bit sum of the bytes before it.
+AudMessageArg hugeBlob() {
+  AudMessageArg arg{};
+  arg.struct_size = sizeof(AudMessageArg);
+  arg.type = AUD_ARG_BLOB;
+  arg.size = UINT32_MAX - 2;
+  arg.value.b = kOneByte;
+  return arg;
+}
 
 void* echoCreate(const AudNodeDescriptor*, const AudHostApi* host) {
   return new EchoNode{host};
@@ -159,6 +252,11 @@ void echoProcess(void* instance, const AudProcessContext* context) {
     const int32_t load = host->begin_load(host->host, instance, "rt");
     host->end_load(host->host, load, AUD_OK, nullptr);
     AUD_TEST_RTSAN_ON();
+  }
+  if (g_echoHugeBlob.load(std::memory_order_acquire)) {
+    const AudMessageArg blob = hugeBlob();
+    const AudMessage huge{sizeof(AudMessage), 1, "/huge", &blob};
+    host->emit_message(host->host, instance, &huge);
   }
   for (uint32_t i = 0; i < context->num_events; ++i) {
     const AudEvent& event = context->events[i];
@@ -249,6 +347,7 @@ const AudNodeDescriptor kFixedEchoDescriptor = {
 void registerTypes(Fixture& f) {
   const AudHostApi* host = aud_graph_host_api(f.graph);
   host->register_node_type(host->host, &kLoaderDescriptor);
+  host->register_node_type(host->host, &kEagerDescriptor);
   host->register_node_type(host->host, &kEchoDescriptor);
   host->register_node_type(host->host, &kFixedEchoDescriptor);
 }
@@ -491,13 +590,52 @@ AUD_TEST(an_offline_render_waits_for_the_tasks_of_each_block) {
   request.frames = 1024;
   request.block_frames = 128;
   request.outputs = &bus;
+  // A task the render finds running, like a load a string setting started.
+  const AudHostApi* host = aud_graph_host_api(f.graph);
+  const AudTask slow{sizeof(AudTask), 0, slowCountTask, nullptr};
+  AUD_CHECK(host->post_task(host->host, &slow) == AUD_OK);
   AUD_CHECK(aud_graph_render_offline(f.graph, &request) == AUD_OK);
   g_echoPost.store(false);
-  // Every block saw the tasks of all blocks before it done.
+  // Every block saw the task before the render and the tasks of all blocks
+  // before it done - the first one too.
   AUD_CHECK(g_seenTasks.size() == 8);
   for (uint32_t i = 0; i < g_seenTasks.size(); ++i) {
-    AUD_CHECK(g_seenTasks[i] == i);
+    AUD_CHECK(g_seenTasks[i] == i + 1);
   }
+}
+
+AUD_TEST(a_graph_that_goes_waits_for_its_own_tasks_only) {
+  Fixture other;  // keeps the workers of the process running
+  auto graph = std::make_unique<Fixture>();
+  const AudHostApi* host = aud_graph_host_api(graph->graph);
+  g_gate.store(false);
+  g_tasksRun.store(0);
+  const AudTask gated{sizeof(AudTask), 0, gatedCountTask, nullptr};
+  AUD_CHECK(host->post_task(host->host, &gated) == AUD_OK);
+  // A graph without tasks goes while the task of the first one waits.
+  std::atomic<bool> gone{false};
+  std::thread third([&gone] {
+    AudGraphConfig config{};
+    config.struct_size = sizeof(AudGraphConfig);
+    config.sample_rate = kRate;
+    config.max_frames = 256;
+    aud_graph_destroy(aud_graph_create(&config));
+    gone.store(true);
+  });
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!gone.load() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  AUD_CHECK(gone.load());
+  g_gate.store(true);
+  third.join();
+  // The first graph waits for its own task, which is still running.
+  const AudTask slow{sizeof(AudTask), 0, slowCountTask, nullptr};
+  AUD_CHECK(host->post_task(host->host, &slow) == AUD_OK);
+  graph.reset();
+  AUD_CHECK(g_tasksRun.load() == 2);
+  AUD_CHECK(usage().workers == 2);
 }
 
 // ############################################################################
@@ -564,6 +702,125 @@ AUD_TEST(the_graph_keeps_the_last_64_loads) {
   AUD_CHECK(aud_graph_loads(f.graph, nullptr, 0) == 64);
 }
 
+AUD_TEST(the_commit_that_removes_a_node_cancels_its_loads) {
+  Fixture f;
+  registerTypes(f);
+  const int32_t loader = addNode(f, "aud.test.loader");
+  g_gate.store(false);
+  const int32_t id = aud_graph_set_string(f.graph, loader, 0, "piano.sfz");
+  f.commit([&] { aud_graph_remove_node(f.graph, loader); });
+  // The task sees the cancellation and ends the load; the gate stays shut.
+  AUD_CHECK(aud_graph_wait_loads(f.graph, 0, 2000) == AUD_OK);
+  AUD_CHECK(info(f, id).result == AUD_ERROR_CANCELLED);
+  AUD_CHECK(info(f, id).cancelled == 1);
+  g_gate.store(true);
+}
+
+AUD_TEST(a_load_a_destroyed_node_left_running_ends_as_cancelled) {
+  Fixture f;
+  registerTypes(f);
+  const int32_t loader = addNode(f, "aud.test.loader");
+  aud_graph_start(f.graph);
+  f.render(256);
+  const int32_t id = aud_graph_set_string(f.graph, loader, 0, "stuck");
+  AUD_CHECK(id > 0);
+  f.commit([&] { aud_graph_remove_node(f.graph, loader); });
+  // Nothing ends the load: the graph ends it when it frees the node, so
+  // that a wait for the loads returns. The node is done after its fade;
+  // the next block adopts the program without it, and the graph frees it
+  // when it takes the notifications after that block.
+  f.render(256);
+  AUD_CHECK(f.countNotifications(AUD_NOTIFY_NODE_DONE) == 1);
+  f.render(256);
+  f.takeAll();
+  AUD_CHECK(aud_graph_wait_loads(f.graph, 0, 1000) == AUD_OK);
+  const AudLoadInfo ended = info(f, id);
+  AUD_CHECK(ended.result == AUD_ERROR_CANCELLED && ended.cancelled == 1);
+  AUD_CHECK(std::string(ended.message) == "the node was removed");
+  // An end of the package that comes later changes nothing.
+  const AudHostApi* host = aud_graph_host_api(f.graph);
+  host->end_load(host->host, id, AUD_OK, nullptr);
+  AUD_CHECK(info(f, id).result == AUD_ERROR_CANCELLED);
+  uint32_t ends = 0;
+  for (const AudGraphNotification& n : f.takeAll()) {
+    if (n.type == AUD_NOTIFY_LOAD && n.value == id && n.code != AUD_PENDING) {
+      ends += 1;
+      AUD_CHECK(n.code == AUD_ERROR_CANCELLED && n.node == loader);
+    }
+  }
+  AUD_CHECK(ends == 1);
+}
+
+AUD_TEST(a_load_begun_in_create_or_prepare_belongs_to_the_new_node) {
+  Fixture f;
+  registerTypes(f);
+  g_eagerFails.store(0);
+  const int32_t eager = f.node("aud.test.eager");
+  AUD_CHECK(eager > 0);
+  AUD_CHECK(info(f, g_eagerLoads[0]).node == eager);
+  AUD_CHECK(info(f, g_eagerLoads[1]).node == eager);
+  // The node goes before it rendered: its loads end with it.
+  f.commit([&] { aud_graph_remove_node(f.graph, eager); });
+  AUD_CHECK(aud_graph_wait_loads(f.graph, 0, 1000) == AUD_OK);
+  AUD_CHECK(info(f, g_eagerLoads[0]).result == AUD_ERROR_CANCELLED);
+  AUD_CHECK(info(f, g_eagerLoads[1]).result == AUD_ERROR_CANCELLED);
+  // A node whose create or first prepare fails spends its handle and ends
+  // the loads it began.
+  for (int fails = 1; fails <= 2; ++fails) {
+    g_eagerFails.store(fails);
+    AUD_CHECK(f.node("aud.test.eager") == AUD_ERROR_FAILED);
+    for (int load = 0; load < fails; ++load) {
+      const AudLoadInfo ended = info(f, g_eagerLoads[load]);
+      AUD_CHECK(ended.node == eager + fails);
+      AUD_CHECK(ended.result == AUD_ERROR_CANCELLED);
+    }
+    AUD_CHECK(aud_graph_wait_loads(f.graph, 0, 1000) == AUD_OK);
+  }
+  g_eagerFails.store(0);
+  AUD_CHECK(f.node("aud.test.eager") == eager + 3);
+}
+
+AUD_TEST(a_waiting_load_keeps_one_progress_between_its_begin_and_end) {
+  Fixture f;
+  const AudHostApi* host = aud_graph_host_api(f.graph);
+  const int32_t id = host->begin_load(host->host, nullptr, "x");
+  for (int step = 1; step <= 9; ++step) {
+    host->load_progress(host->host, id, 0.1f * static_cast<float>(step));
+  }
+  host->end_load(host->host, id, AUD_OK, nullptr);
+  std::vector<AudGraphNotification> loads;
+  for (const AudGraphNotification& n : f.takeAll()) {
+    if (n.type == AUD_NOTIFY_LOAD) loads.push_back(n);
+  }
+  // The begin, the last progress and the end, in this order.
+  AUD_CHECK(loads.size() == 3);
+  AUD_CHECK(loads[0].code == AUD_PENDING && loads[0].number == 0);
+  AUD_CHECK(loads[1].code == AUD_PENDING);
+  AUD_CHECK_NEAR(loads[1].number, 0.9, 1e-6);
+  AUD_CHECK(loads[2].code == AUD_OK && loads[2].number == 1);
+  AUD_CHECK(f.stats().notifications_dropped == 0);
+}
+
+AUD_TEST(the_load_notifications_never_lose_a_begin_or_an_end) {
+  Fixture f(0, 1, 256, [](AudGraphConfig& c) { c.notification_capacity = 4; });
+  const AudHostApi* host = aud_graph_host_api(f.graph);
+  int32_t ids[6];
+  for (int32_t& id : ids) id = host->begin_load(host->host, nullptr, "x");
+  // Six begins wait, more than the capacity: every progress is dropped.
+  for (const int32_t id : ids) host->load_progress(host->host, id, 0.5f);
+  for (const int32_t id : ids) host->end_load(host->host, id, AUD_OK, nullptr);
+  AUD_CHECK(f.stats().notifications_dropped == 6);
+  uint32_t begins = 0;
+  uint32_t ends = 0;
+  for (const AudGraphNotification& n : f.takeAll()) {
+    if (n.type != AUD_NOTIFY_LOAD) continue;
+    AUD_CHECK(n.code == AUD_PENDING ? n.number == 0 : n.code == AUD_OK);
+    begins += n.code == AUD_PENDING ? 1 : 0;
+    ends += n.code == AUD_OK ? 1 : 0;
+  }
+  AUD_CHECK(begins == 6 && ends == 6);
+}
+
 AUD_TEST(the_host_takes_load_ids_and_waits_for_the_loads) {
   Fixture f(0, 1);
   registerTypes(f);
@@ -618,6 +875,22 @@ AUD_TEST(caches_are_trimmed_to_the_budget_of_the_process) {
             AUD_ERROR_INVALID_ARGUMENT);
   AudCacheUsage small{};
   AUD_CHECK(aud_cache_usage(&small) == AUD_ERROR_INVALID_ARGUMENT);
+}
+
+AUD_TEST(a_budget_above_int64_max_means_no_limit) {
+  Fixture f;
+  const AudHostApi* host = aud_graph_host_api(f.graph);
+  TestCache cache;
+  cache.host = host;
+  host->register_cache(host->host, &kTestCacheVTable, &cache);
+  // Taken as is, the budget would compare as -1 and trim everything.
+  aud_cache_set_budget(UINT64_MAX);
+  AUD_CHECK(aud_cache_budget() == static_cast<uint64_t>(INT64_MAX));
+  hold(cache, 600);
+  AUD_CHECK(aud_tasks_wait_idle(1000) == AUD_OK);
+  AUD_CHECK(cache.asked.empty() && usage().bytes == 600);
+  host->unregister_cache(host->host, &cache);
+  aud_cache_set_budget(256ull << 20);
 }
 
 AUD_TEST(the_largest_cache_is_trimmed_first) {
@@ -810,6 +1083,86 @@ AUD_TEST(messages_pass_the_fixed_block_wrapper) {
   AUD_CHECK(replies(f).size() == 64);
 }
 
+AUD_TEST(a_prepare_gives_back_the_slots_a_wrapper_holds) {
+  Fixture f(0, 1, 256, [](AudGraphConfig& c) { c.message_capacity = 2; });
+  registerTypes(f);
+  const int32_t echo = addNode(f, "aud.test.fixed_echo");
+  aud_graph_start(f.graph);
+  // The wrapper of 256 frames holds the message after a block of 100; the
+  // prepare replaces it with one of 128.
+  AUD_CHECK(send(f, echo, "/held") == AUD_OK);
+  f.render(100);
+  AUD_CHECK(aud_graph_stop(f.graph) == AUD_OK);
+  AUD_CHECK(aud_graph_prepare(f.graph, 0, 128) == AUD_OK);
+  AUD_CHECK(aud_graph_start(f.graph) == AUD_OK);
+  // Every slot takes a message again.
+  AUD_CHECK(send(f, echo, "/a") == AUD_OK);
+  AUD_CHECK(send(f, echo, "/b") == AUD_OK);
+  f.render(128);
+  const std::vector<Reply> all = replies(f);
+  AUD_CHECK(all.size() == 2 && all[0].path == "/a" && all[1].path == "/b");
+}
+
+AUD_TEST(a_removed_node_gives_back_the_slots_its_wrapper_holds) {
+  Fixture f(0, 1, 1024, [](AudGraphConfig& c) { c.message_capacity = 2; });
+  registerTypes(f);
+  const int32_t fixed = addNode(f, "aud.test.fixed_echo");
+  aud_graph_start(f.graph);
+  // The fade of 240 frames ends before the wrapper of 1024 frames is full.
+  AUD_CHECK(send(f, fixed, "/held") == AUD_OK);
+  f.render(100);
+  f.commit([&] { aud_graph_remove_node(f.graph, fixed); });
+  for (int i = 0; i < 3; ++i) f.render(100);
+  AUD_CHECK(f.countNotifications(AUD_NOTIFY_NODE_DONE) == 1);
+  AUD_CHECK(replies(f).empty());
+  // Every slot takes a message again.
+  const int32_t echo = addNode(f, "aud.test.echo");
+  AUD_CHECK(send(f, echo, "/a") == AUD_OK);
+  AUD_CHECK(send(f, echo, "/b") == AUD_OK);
+  f.render(100);
+  AUD_CHECK(replies(f).size() == 2);
+}
+
+AUD_TEST(a_reply_beyond_16_arguments_is_dropped_and_counted) {
+  Fixture f;
+  registerTypes(f);
+  const int32_t echo = addNode(f, "aud.test.echo");
+  aud_graph_start(f.graph);
+  // The echo adds the sample offset: 15 arguments come back as 16, 16 as 17.
+  const std::vector<AudMessageArg> fifteen(15, intArg(1));
+  const std::vector<AudMessageArg> sixteen(16, intArg(1));
+  AUD_CHECK(send(f, echo, "/fits", fifteen) == AUD_OK);
+  AUD_CHECK(send(f, echo, "/beyond", sixteen) == AUD_OK);
+  f.render(256);
+  const std::vector<Reply> all = replies(f);
+  AUD_CHECK(all.size() == 1 && all[0].path == "/fits");
+  AUD_CHECK(all.size() == 1 && all[0].ints.size() == 16);
+  AUD_CHECK(f.stats().messages_dropped == 1);
+  uint32_t dropped = 0;
+  for (const AudGraphNotification& n : f.takeAll()) {
+    if (n.type == AUD_NOTIFY_DIAGNOSTIC && n.code == AUD_ERROR_QUEUE_FULL &&
+        n.node == echo) {
+      dropped += n.count;
+    }
+  }
+  AUD_CHECK(dropped == 1);
+}
+
+AUD_TEST(a_blob_of_almost_4_gib_is_refused_both_ways) {
+  Fixture f;
+  registerTypes(f);
+  const int32_t echo = addNode(f, "aud.test.echo");
+  aud_graph_start(f.graph);
+  // A sum of the sizes would wrap on a 32-bit target and let the blob be
+  // copied into a slot of 1000 bytes, or into a reply record.
+  AUD_CHECK(send(f, echo, "/to", {hugeBlob()}) == AUD_ERROR_CAPACITY);
+  g_echoHugeBlob.store(true);
+  f.render(256);
+  g_echoHugeBlob.store(false);
+  AUD_CHECK(replies(f).empty());
+  AUD_CHECK(f.stats().messages_dropped == 1);
+}
+
 AUD_TEST(a_full_reply_queue_drops_and_counts) {
   Fixture f(0, 1, 256, [](AudGraphConfig& c) { c.reply_capacity = 2; });
   registerTypes(f);
@@ -842,8 +1195,14 @@ AUD_TEST(messages_are_checked_before_they_queue) {
   AUD_CHECK(send(f, echo, "no-slash") == AUD_ERROR_INVALID_ARGUMENT);
   AUD_CHECK(send(f, loader, "/x") == AUD_ERROR_UNSUPPORTED);
   AUD_CHECK(send(f, 999, "/x") == AUD_ERROR_NOT_FOUND);
-  std::vector<AudMessageArg> many(17, intArg(1));
-  AUD_CHECK(send(f, echo, "/many", many) == AUD_ERROR_INVALID_ARGUMENT);
+  const std::vector<AudMessageArg> many(17, intArg(1));
+  AUD_CHECK(send(f, echo, "/many", many) == AUD_ERROR_CAPACITY);
+  // 1000 bytes in the layout of a reply - the path with its terminator, a
+  // tag and the four bytes of an int - fit, one more does not.
+  const std::string path = "/" + std::string(993, 'p');
+  AUD_CHECK(send(f, echo, path.c_str(), {intArg(1)}) == AUD_OK);
+  const std::string longer = path + "p";
+  AUD_CHECK(send(f, echo, longer.c_str(), {intArg(1)}) == AUD_ERROR_CAPACITY);
   AudMessageArg unknown = intArg(0);
   unknown.type = 'x';
   AUD_CHECK(send(f, echo, "/odd", {unknown}) == AUD_ERROR_INVALID_ARGUMENT);

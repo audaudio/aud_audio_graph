@@ -202,20 +202,10 @@ void hostEmitEvent(void* host, void* instance, const AudEvent* event) {
 }
 
 // ............................................................................
-// The host api of minor 4 (ticket 25): tasks, loads, caches, diagnostics
-// and messages.
-
-// Pushes a notification of the control side or a worker; the notification
-// thread wakes the listener as for those of the realtime thread.
-void notifyControl(AudGraph* graph, const AudGraphNotification& notification) {
-  {
-    std::lock_guard<std::mutex> lock(graph->loadsMutex);
-    graph->controlNotifications.push_back(notification);
-  }
-  if (!graph->wakePending.exchange(true, std::memory_order_acq_rel)) {
-    graph->wake.post();
-  }
-}
+// Loads (lifecycle-002, ticket 25). A load and its notifications change
+// under loadsMutex, so that the listener hears the notifications of a load
+// in their order - a progress never after the end. The helpers expect the
+// lock held unless they say that they take it.
 
 AudGraphNotification loadNotification(const AudGraph* graph, const Load& load) {
   AudGraphNotification n{};
@@ -230,7 +220,31 @@ AudGraphNotification loadNotification(const AudGraph* graph, const Load& load) {
   return n;
 }
 
-// The load `id` of a graph; call with loadsMutex held.
+// Queues a notification of a load for the control thread, taken with those
+// of the realtime thread; the caller wakes the listener once the lock is
+// released. A host that never takes them keeps no more than a begin and an
+// end per load: a progress replaces the progress of the same load that
+// still waits, and is dropped while the queue holds as many as the queue of
+// the realtime thread.
+void queueLoadNotification(AudGraph* graph, const Load& load, bool progress) {
+  auto& queue = graph->controlNotifications;
+  const AudGraphNotification n = loadNotification(graph, load);
+  if (progress) {
+    for (auto it = queue.rbegin(); it != queue.rend(); ++it) {
+      if (it->progress && it->notification.value == load.id) {
+        it->notification = n;
+        return;
+      }
+    }
+    if (queue.size() >= graph->config.notification_capacity) {
+      graph->notificationsDropped.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
+  }
+  queue.push_back(ControlNotification{n, progress});
+}
+
+// The load `id` of a graph.
 Load* findLoad(AudGraph* graph, int32_t id) {
   for (auto& load : graph->loads) {
     if (load->id == id) return load.get();
@@ -238,9 +252,111 @@ Load* findLoad(AudGraph* graph, int32_t id) {
   return nullptr;
 }
 
-int32_t hostPostTask(void*, const AudTask* task) {
-  if (task == nullptr) return AUD_ERROR_INVALID_ARGUMENT;
-  return Resources::get().post(*task);
+// The load `id` while it runs; NULL for one that ended or that the graph
+// keeps no longer.
+Load* runningLoad(AudGraph* graph, int32_t id) {
+  Load* load = findLoad(graph, id);
+  if (load == nullptr ||
+      load->result.load(std::memory_order_acquire) != AUD_PENDING) {
+    return nullptr;
+  }
+  return load;
+}
+
+// Keeps the loads that run and the last kKeptLoads that ended; the oldest
+// that ended beyond them go.
+void keepEndedLoads(AudGraph* graph) {
+  auto& loads = graph->loads;
+  size_t ended = 0;
+  for (auto& load : loads) {
+    if (load->result.load(std::memory_order_relaxed) != AUD_PENDING) ended += 1;
+  }
+  for (auto it = loads.begin(); ended > kKeptLoads && it != loads.end();) {
+    if ((*it)->result.load(std::memory_order_relaxed) != AUD_PENDING) {
+      it = loads.erase(it);
+      ended -= 1;
+    } else {
+      ++it;
+    }
+  }
+}
+
+// Ends a running load with `result` and `message` and queues its end.
+void endLoad(AudGraph* graph, Load& load, int32_t result, const char* message) {
+  // AUD_PENDING is the state of a running load, never its result.
+  load.result.store(result == AUD_PENDING ? AUD_ERROR_FAILED : result,
+                    std::memory_order_release);
+  if (result == AUD_OK) load.progress.store(1.0f, std::memory_order_release);
+  load.message = message == nullptr ? "" : message;
+  load.endNs = aud_clock_now_ns();
+  queueLoadNotification(graph, load, false);
+}
+
+// Asks the running loads of a removed node to stop. Takes loadsMutex.
+void cancelLoadsOf(AudGraph* graph, int32_t node) {
+  if (node <= 0) return;
+  std::lock_guard<std::mutex> lock(graph->loadsMutex);
+  for (auto& load : graph->loads) {
+    if (load->node == node &&
+        load->result.load(std::memory_order_acquire) == AUD_PENDING) {
+      load->cancelled.store(true, std::memory_order_release);
+    }
+  }
+}
+
+// Ends the loads a destroyed node left running as cancelled: nothing is
+// left to end them, and a wait for the loads would never return. An
+// end_load of the package that comes later finds the load ended and is
+// ignored. Takes loadsMutex.
+void endLoadsOf(AudGraph* graph, int32_t node) {
+  if (node <= 0) return;
+  bool ended = false;
+  {
+    std::lock_guard<std::mutex> lock(graph->loadsMutex);
+    for (auto& load : graph->loads) {
+      if (load->node != node ||
+          load->result.load(std::memory_order_acquire) != AUD_PENDING) {
+        continue;
+      }
+      load->cancelled.store(true, std::memory_order_release);
+      endLoad(graph, *load, AUD_ERROR_CANCELLED, "the node was removed");
+      ended = true;
+    }
+    if (ended) keepEndedLoads(graph);
+  }
+  if (!ended) return;
+  graph->loadsChanged.notify_all();
+  wakeListener(graph);
+}
+
+// ............................................................................
+// The host api of minor 4 (ticket 25): tasks, loads, caches, diagnostics
+// and messages.
+
+// The graph counts the tasks its nodes post, so that it can wait for them
+// when it goes.
+int32_t hostPostTask(void* host, const AudTask* task) {
+  auto* graph = static_cast<AudGraph*>(host);
+  if (graph == nullptr || task == nullptr) return AUD_ERROR_INVALID_ARGUMENT;
+  return Resources::get().post(*task, &graph->tasks);
+}
+
+// The handle of the node whose package instance `instance` is; 0 for one
+// the graph does not know. A load begun while aud_graph_create_node runs
+// the package's create - which has not returned the instance yet - or its
+// first prepare belongs to the node being created.
+int32_t handleOf(AudGraph* graph, const void* instance) {
+  for (auto& node : graph->instances) {
+    if (node->instance != nullptr && node->instance == instance) {
+      return node->handle;
+    }
+  }
+  const NodeInstance* creating = graph->creating;
+  if (creating != nullptr &&
+      (creating->instance == nullptr || creating->instance == instance)) {
+    return creating->handle;
+  }
+  return 0;
 }
 
 int32_t hostBeginLoad(void* host, void* instance, const char* name) {
@@ -249,20 +365,16 @@ int32_t hostBeginLoad(void* host, void* instance, const char* name) {
   if (graph == nullptr) return AUD_ERROR_INVALID_ARGUMENT;
   auto load = std::make_unique<Load>();
   load->id = Resources::get().nextLoadId();
-  for (auto& node : graph->instances) {
-    if (node->instance != nullptr && node->instance == instance) {
-      load->node = node->handle;
-    }
-  }
+  load->node = handleOf(graph, instance);
   load->name = name == nullptr ? "" : name;
   load->startNs = aud_clock_now_ns();
   const int32_t id = load->id;
-  const AudGraphNotification n = loadNotification(graph, *load);
   {
     std::lock_guard<std::mutex> lock(graph->loadsMutex);
+    queueLoadNotification(graph, *load, false);
     graph->loads.push_back(std::move(load));
   }
-  notifyControl(graph, n);
+  wakeListener(graph);
   return id;
 }
 
@@ -270,65 +382,37 @@ void hostLoadProgress(void* host, int32_t id, float progress) {
   watchdogCheck(AUD_GRAPH_VIOLATION_CONTROL);
   auto* graph = static_cast<AudGraph*>(host);
   if (graph == nullptr) return;
-  AudGraphNotification n{};
   {
     std::lock_guard<std::mutex> lock(graph->loadsMutex);
-    Load* load = findLoad(graph, id);
-    if (load == nullptr ||
-        load->result.load(std::memory_order_acquire) != AUD_PENDING) {
-      return;
-    }
+    Load* load = runningLoad(graph, id);
+    if (load == nullptr) return;
     progress = std::min(1.0f, std::max(0.0f, progress));
     load->progress.store(progress, std::memory_order_release);
-    // At most a notification per 2 % or per 50 ms.
     const int64_t now = aud_clock_now_ns();
-    if (progress - load->notifiedProgress < 0.02f &&
-        now - load->notifiedNs < 50000000) {
+    if (progress - load->notifiedProgress < kLoadProgressStep &&
+        now - load->notifiedNs < kLoadProgressIntervalNs) {
       return;
     }
     load->notifiedProgress = progress;
     load->notifiedNs = now;
-    n = loadNotification(graph, *load);
+    queueLoadNotification(graph, *load, true);
   }
-  notifyControl(graph, n);
+  wakeListener(graph);
 }
 
 void hostEndLoad(void* host, int32_t id, int32_t result, const char* message) {
   watchdogCheck(AUD_GRAPH_VIOLATION_CONTROL);
   auto* graph = static_cast<AudGraph*>(host);
   if (graph == nullptr) return;
-  AudGraphNotification n{};
   {
     std::lock_guard<std::mutex> lock(graph->loadsMutex);
-    Load* load = findLoad(graph, id);
-    if (load == nullptr ||
-        load->result.load(std::memory_order_acquire) != AUD_PENDING) {
-      return;
-    }
-    // AUD_PENDING is the state of a running load, never its result.
-    load->result.store(result == AUD_PENDING ? AUD_ERROR_FAILED : result,
-                       std::memory_order_release);
-    if (result == AUD_OK) load->progress.store(1.0f, std::memory_order_release);
-    load->message = message == nullptr ? "" : message;
-    load->endNs = aud_clock_now_ns();
-    n = loadNotification(graph, *load);
-    // Keep the last loads that ended; drop the oldest of them.
-    size_t ended = 0;
-    for (auto& kept : graph->loads) {
-      if (kept->result.load(std::memory_order_relaxed) != AUD_PENDING) ended += 1;
-    }
-    for (auto it = graph->loads.begin();
-         ended > kKeptLoads && it != graph->loads.end();) {
-      if ((*it)->result.load(std::memory_order_relaxed) != AUD_PENDING) {
-        it = graph->loads.erase(it);
-        ended -= 1;
-      } else {
-        ++it;
-      }
-    }
+    Load* load = runningLoad(graph, id);
+    if (load == nullptr) return;
+    endLoad(graph, *load, result, message);
+    keepEndedLoads(graph);
   }
   graph->loadsChanged.notify_all();
-  notifyControl(graph, n);
+  wakeListener(graph);
 }
 
 int32_t hostLoadCancelled(void* host, int32_t id) {
@@ -402,12 +486,18 @@ void freeRetiredPrograms(AudGraph* graph) {
   }
 }
 
+// Destroys an instance that no block renders any more, with what it leaves
+// behind (ticket 25): the messages its wrapper holds give their slots back,
+// its running loads are asked to stop before the node goes and end as
+// cancelled after it - also those of a node whose create failed.
 void destroyInstance(AudGraph* graph, NodeInstance* instance) {
+  releaseWrapped(graph, instance);
+  cancelLoadsOf(graph, instance->handle);
   if (instance->instance != nullptr) {
     instance->descriptor->vtable->destroy(instance->instance);
     instance->instance = nullptr;
   }
-  (void)graph;
+  endLoadsOf(graph, instance->handle);
 }
 
 // Frees what no program references any more: finished instances and the
@@ -603,6 +693,9 @@ int32_t prepareInstance(AudGraph* graph, NodeInstance* instance) {
   if ((d->capabilities & AUD_NODE_CAP_TAIL) && d->vtable->get_tail) {
     instance->tail = d->vtable->get_tail(instance->instance);
   }
+  // The wrapper of the old block size goes with the block it was filling;
+  // no block renders meanwhile, so the control thread frees its messages.
+  releaseWrapped(graph, instance);
   if (!variable) {
     auto wrapper = std::make_unique<FixedBlockWrapper>();
     wrapper->blockSize = maxFrames;
@@ -642,6 +735,17 @@ int32_t prepareInstance(AudGraph* graph, NodeInstance* instance) {
   }
   instance->latency = latency;
   return AUD_OK;
+}
+
+// Creates the package's node of a new instance - the engine renders its
+// own types itself - and prepares it.
+int32_t createAndPrepare(AudGraph* graph, NodeInstance* instance) {
+  if (instance->builtin == Builtin::none) {
+    const AudNodeDescriptor* type = instance->descriptor;
+    instance->instance = type->vtable->create(type, &graph->hostApi);
+    if (instance->instance == nullptr) return AUD_ERROR_FAILED;
+  }
+  return prepareInstance(graph, instance);
 }
 
 // The channels of the buses of a new instance: the configuration or the
@@ -807,51 +911,89 @@ uint32_t findMessageSlot(AudGraph* graph) {
   return UINT32_MAX;
 }
 
-// Copies a message into a slot: the path, the texts and the blobs into its
-// bytes; AUD_ERROR_CAPACITY when they do not fit, AUD_ERROR_INVALID_ARGUMENT
-// for an argument of an unknown type.
-int32_t copyMessage(MessageSlot& slot, const AudMessage& message) {
-  size_t used = 0;
-  const auto copy = [&](const void* bytes, size_t size) -> const char* {
-    if (used + size > kMessageBytes) return nullptr;
-    char* target = slot.data + used;
+// Writes a message into a slot and counts its bytes in the layout of
+// AudGraphMessage - the path, then per argument a tag and the value -
+// against AUD_GRAPH_MESSAGE_BYTES (osc-002); the slot keeps the path, the
+// texts and the blobs, a part of them. No check takes a sum, which could
+// wrap on a 32-bit target: a blob of almost 4 GiB would pass it.
+struct MessageWriter {
+  explicit MessageWriter(MessageSlot& target) : slot(target) {}
+
+  MessageSlot& slot;
+  size_t packed = 0;  // the bytes of the layout
+  size_t stored = 0;  // the bytes of the slot
+
+  // Counts `size` bytes of the layout; false when they do not fit.
+  bool count(size_t size) {
+    if (size > kMessageBytes - packed) return false;
+    packed += size;
+    return true;
+  }
+
+  // Counts and keeps `size` bytes; NULL when they do not fit.
+  const char* store(const void* bytes, size_t size) {
+    if (!count(size)) return nullptr;
+    char* target = slot.data + stored;
     if (size > 0) std::memcpy(target, bytes, size);
-    used += size;
+    stored += size;
     return target;
-  };
-  const char* path = copy(message.path, std::strlen(message.path) + 1);
+  }
+};
+
+// Copies an argument into its slot - a text or a blob into the bytes - and
+// counts its tag and its value; AUD_ERROR_CAPACITY when they do not fit,
+// AUD_ERROR_INVALID_ARGUMENT for an unknown type or a blob without bytes.
+int32_t copyArgument(MessageWriter& writer, const AudMessageArg& arg,
+                     AudMessageArg& target) {
+  target = arg;
+  target.struct_size = sizeof(AudMessageArg);
+  bool fits = writer.count(1);  // the tag
+  switch (arg.type) {
+    case AUD_ARG_INT32:
+    case AUD_ARG_FLOAT:
+      fits = fits && writer.count(4);
+      break;
+    case AUD_ARG_INT64:
+    case AUD_ARG_DOUBLE:
+      fits = fits && writer.count(8);
+      break;
+    case AUD_ARG_TRUE:
+    case AUD_ARG_FALSE:
+    case AUD_ARG_NIL:
+    case AUD_ARG_IMPULSE:
+      break;
+    case AUD_ARG_STRING: {
+      const char* s = arg.value.s == nullptr ? "" : arg.value.s;
+      target.value.s = fits ? writer.store(s, std::strlen(s) + 1) : nullptr;
+      fits = target.value.s != nullptr;
+      break;
+    }
+    case AUD_ARG_BLOB:
+      if (arg.size > 0 && arg.value.b == nullptr) {
+        return AUD_ERROR_INVALID_ARGUMENT;
+      }
+      // Its size, then its bytes.
+      fits = fits && writer.count(4);
+      target.value.b = fits ? writer.store(arg.value.b, arg.size) : nullptr;
+      fits = target.value.b != nullptr;
+      break;
+    default:
+      return AUD_ERROR_INVALID_ARGUMENT;
+  }
+  return fits ? AUD_OK : AUD_ERROR_CAPACITY;
+}
+
+// Copies a message into a slot; AUD_ERROR_CAPACITY for more than
+// AUD_GRAPH_MAX_MESSAGE_ARGS arguments or more than AUD_GRAPH_MESSAGE_BYTES,
+// AUD_ERROR_INVALID_ARGUMENT for an argument the layout cannot carry.
+int32_t copyMessage(MessageSlot& slot, const AudMessage& message) {
+  if (message.num_args > kMaxMessageArgs) return AUD_ERROR_CAPACITY;
+  MessageWriter writer{slot};
+  const char* path = writer.store(message.path, std::strlen(message.path) + 1);
   if (path == nullptr) return AUD_ERROR_CAPACITY;
   for (uint32_t i = 0; i < message.num_args; ++i) {
-    const AudMessageArg& arg = message.args[i];
-    AudMessageArg& target = slot.args[i];
-    target = arg;
-    target.struct_size = sizeof(AudMessageArg);
-    switch (arg.type) {
-      case AUD_ARG_INT32:
-      case AUD_ARG_FLOAT:
-      case AUD_ARG_INT64:
-      case AUD_ARG_DOUBLE:
-      case AUD_ARG_TRUE:
-      case AUD_ARG_FALSE:
-      case AUD_ARG_NIL:
-      case AUD_ARG_IMPULSE:
-        break;
-      case AUD_ARG_STRING: {
-        const char* s = arg.value.s == nullptr ? "" : arg.value.s;
-        target.value.s = copy(s, std::strlen(s) + 1);
-        if (target.value.s == nullptr) return AUD_ERROR_CAPACITY;
-        break;
-      }
-      case AUD_ARG_BLOB:
-        if (arg.size > 0 && arg.value.b == nullptr) {
-          return AUD_ERROR_INVALID_ARGUMENT;
-        }
-        target.value.b = copy(arg.value.b, arg.size);
-        if (target.value.b == nullptr) return AUD_ERROR_CAPACITY;
-        break;
-      default:
-        return AUD_ERROR_INVALID_ARGUMENT;
-    }
+    const int32_t copied = copyArgument(writer, message.args[i], slot.args[i]);
+    if (copied != AUD_OK) return copied;
   }
   slot.message.struct_size = sizeof(AudMessage);
   slot.message.num_args = message.num_args;
@@ -1019,9 +1161,10 @@ AUD_EXPORT void aud_graph_destroy(AudGraph* graph) {
     }
   }
   // The nodes are gone; tasks they posted may still run and report to the
-  // graph, so the graph waits until the workers are idle. The last graph
-  // of the process stops the workers.
-  Resources::get().waitIdle(0);
+  // graph, so the graph waits until they have run - only its own, the tasks
+  // of other graphs go on (ticket 25). The last graph of the process stops
+  // the workers.
+  Resources::get().waitTasks(graph->tasks, 0);
   Resources::get().detach();
   delete graph;
 }
@@ -1195,16 +1338,18 @@ AUD_EXPORT int32_t aud_graph_create_node(AudGraph* graph, const char* type_id,
     instance->delayFrames = c.delay_frames;
   } else if (type == &kTapDescriptor) {
     instance->builtin = Builtin::tap;
-  } else {
-    instance->instance = type->vtable->create(type, &graph->hostApi);
-    if (instance->instance == nullptr) return AUD_ERROR_FAILED;
   }
-  result = prepareInstance(graph, instance.get());
+  // The handle exists before the package creates and prepares the node, so
+  // that a load it begins meanwhile carries its node (ticket 25). A node
+  // that fails spends its handle: handles are never reused.
+  instance->handle = graph->nextHandle++;
+  graph->creating = instance.get();
+  result = createAndPrepare(graph, instance.get());
+  graph->creating = nullptr;
   if (result != AUD_OK) {
     destroyInstance(graph, instance.get());
     return result;
   }
-  instance->handle = graph->nextHandle++;
   const int32_t handle = instance->handle;
   graph->instances.push_back(std::move(instance));
   return handle;
@@ -1437,6 +1582,10 @@ AUD_EXPORT int32_t aud_graph_commit(AudGraph* graph) {
   graph->topology = graph->working;
   graph->workingRemoved.clear();
   graph->transactionOpen = false;
+  // What a removed node still loads is heard nowhere (ticket 25).
+  for (NodeInstance* instance : retiring) {
+    cancelLoadsOf(graph, instance->handle);
+  }
   publish(graph, program);
   return static_cast<int32_t>(program->revision);
 }
@@ -1517,7 +1666,7 @@ AUD_EXPORT int32_t aud_graph_send_message(AudGraph* graph, int32_t node,
                                           const AudTimestamp* at, uint32_t id) {
   if (graph == nullptr || message == nullptr ||
       message->struct_size < sizeof(AudMessage) || message->path == nullptr ||
-      message->path[0] != '/' || message->num_args > kMaxMessageArgs ||
+      message->path[0] != '/' ||
       (message->num_args > 0 && message->args == nullptr)) {
     return AUD_ERROR_INVALID_ARGUMENT;
   }
@@ -1598,11 +1747,8 @@ AUD_EXPORT int32_t aud_graph_load_info(AudGraph* graph, int32_t id,
 AUD_EXPORT int32_t aud_graph_cancel_load(AudGraph* graph, int32_t id) {
   if (graph == nullptr) return AUD_ERROR_INVALID_ARGUMENT;
   std::lock_guard<std::mutex> lock(graph->loadsMutex);
-  Load* load = findLoad(graph, id);
-  if (load == nullptr ||
-      load->result.load(std::memory_order_acquire) != AUD_PENDING) {
-    return AUD_ERROR_NOT_FOUND;
-  }
+  Load* load = runningLoad(graph, id);
+  if (load == nullptr) return AUD_ERROR_NOT_FOUND;
   load->cancelled.store(true, std::memory_order_release);
   return AUD_OK;
 }
@@ -1815,14 +1961,11 @@ AUD_EXPORT int32_t aud_graph_take_notifications(AudGraph* graph,
     auto& control = graph->controlNotifications;
     size_t taken = 0;
     while (count < capacity && taken < control.size()) {
-      out[count++] = control[taken++];
+      out[count++] = control[taken++].notification;
     }
     control.erase(control.begin(), control.begin() + static_cast<long>(taken));
     // What did not fit wakes the listener again.
-    if (!control.empty() &&
-        !graph->wakePending.exchange(true, std::memory_order_acq_rel)) {
-      graph->wake.post();
-    }
+    if (!control.empty()) wakeListener(graph);
   }
   collect(graph);
   if (finished && !graph->transactionOpen && graph->hasProgram) {

@@ -14,12 +14,14 @@
 import 'package:aud_audio_core/aud_audio_core_bindings.dart' as core;
 import 'dart:ffi' as ffi;
 
-/// [any thread] The sample cache budget of the process in bytes.
+/// [any thread] The sample cache budget of the process in bytes, at most
+/// INT64_MAX.
 @ffi.Native<ffi.Uint64 Function()>()
 external int aud_cache_budget();
 
 /// [control] Sets the sample cache budget of the process in bytes (default
-/// 256 MB); a smaller budget trims at once, on the calling thread.
+/// 256 MB); a smaller budget trims at once, on the calling thread. A budget
+/// above INT64_MAX is INT64_MAX: no limit.
 @ffi.Native<ffi.Int32 Function(ffi.Uint64)>()
 external int aud_cache_set_budget(int bytes);
 
@@ -99,7 +101,8 @@ external ffi.Pointer<AudGraph> aud_graph_create(
 /// [control] Creates and prepares an instance of a registered type; returns
 /// its handle (> 0) or an error code: AUD_ERROR_UNKNOWN_TYPE,
 /// AUD_ERROR_FORMAT for channels outside the descriptor's range,
-/// AUD_ERROR_CAPACITY when max_nodes is reached. The instance renders from
+/// AUD_ERROR_CAPACITY when max_nodes is reached, the error of a create or
+/// prepare that failed - which spends a handle. The instance renders from
 /// the next commit on.
 @ffi.Native<
   ffi.Int32 Function(
@@ -115,7 +118,9 @@ external int aud_graph_create_node(
 );
 
 /// [control] Destroys the graph and every instance. The stream must have
-/// stopped calling aud_graph_render.
+/// stopped calling aud_graph_render. The loads the nodes leave running end
+/// as cancelled (see Loads); the call returns once the tasks the nodes
+/// posted have run - not those of other graphs (ticket 25).
 @ffi.Native<ffi.Void Function(ffi.Pointer<AudGraph>)>()
 external void aud_graph_destroy(ffi.Pointer<AudGraph> graph);
 
@@ -334,7 +339,8 @@ external int aud_graph_prepare(
 /// [control] Removes a node inside the open transaction: its connections
 /// go with it, the instance retires at the commit and is freed once its
 /// fade or tail has passed (AUD_NOTIFY_NODE_DONE). A node that never
-/// rendered is freed at once.
+/// rendered is freed at once. The commit cancels the loads of the node
+/// (ticket 25; see Loads).
 @ffi.Native<ffi.Int32 Function(ffi.Pointer<AudGraph>, ffi.Int32)>()
 external int aud_graph_remove_node(ffi.Pointer<AudGraph> graph, int node);
 
@@ -424,9 +430,12 @@ external int aud_graph_send_event(
 /// [control, one producer] Sends a message to a node that takes messages,
 /// at `at` (NULL: the next block); an `id` above zero lets it be cancelled
 /// while it waits (aud_graph_cancel). The graph copies the message:
-/// AUD_ERROR_CAPACITY when every slot waits for its node or the message does
-/// not fit AUD_GRAPH_MESSAGE_BYTES, AUD_ERROR_UNSUPPORTED for a node without
-/// messages; the rest as aud_graph_send_event.
+/// AUD_ERROR_CAPACITY when every slot waits for its node, or the message
+/// takes more than AUD_GRAPH_MESSAGE_BYTES or carries more than
+/// AUD_GRAPH_MAX_MESSAGE_ARGS arguments; AUD_ERROR_INVALID_ARGUMENT for a
+/// path that does not start with a slash or an argument of an unknown type,
+/// AUD_ERROR_UNSUPPORTED for a node without messages; the rest as
+/// aud_graph_send_event.
 @ffi.Native<
   ffi.Int32 Function(
     ffi.Pointer<AudGraph>,
@@ -615,7 +624,9 @@ external int aud_graph_transport_state(
 );
 
 /// [control] Waits until no load of `node` (0: of any node) runs; AUD_OK, or
-/// AUD_PENDING after `timeout_ms` (0 waits as long as it takes).
+/// AUD_PENDING after `timeout_ms` (0 waits as long as it takes). Then the
+/// tails of the nodes are read again, so that the output tail counts what
+/// the loads changed.
 @ffi.Native<ffi.Int32 Function(ffi.Pointer<AudGraph>, ffi.Int32, ffi.Uint32)>()
 external int aud_graph_wait_loads(
   ffi.Pointer<AudGraph> graph,
@@ -889,9 +900,10 @@ external int aud_host_tail(ffi.Pointer<AudHost> host);
 @ffi.Native<ffi.Int32 Function(ffi.Pointer<AudHost>, ffi.Uint32)>()
 external int aud_host_wait_loads(ffi.Pointer<AudHost> host, int timeout_ms);
 
-/// [control] Waits until no task of the workers waits or runs; AUD_OK, or
-/// AUD_PENDING after `timeout_ms` (0 waits as long as it takes). The
-/// offline renderer waits like this after every block.
+/// [control] Waits until no task of the workers waits or runs - of any
+/// graph; AUD_OK, or AUD_PENDING after `timeout_ms` (0 waits as long as it
+/// takes). The offline renderer waits like this before its first block and
+/// after every block.
 @ffi.Native<ffi.Int32 Function(ffi.Uint32)>()
 external int aud_tasks_wait_idle(int timeout_ms);
 
@@ -916,6 +928,8 @@ const String AUD_GRAPH_FEEDBACK_TYPE_ID = 'aud.graph.feedback';
 const String AUD_GRAPH_FILTER_TYPE_ID = 'aud.graph.filter';
 
 const String AUD_GRAPH_INTERNAL_TRANSPORT_ID = 'aud.graph.transport';
+
+const int AUD_GRAPH_MAX_MESSAGE_ARGS = 16;
 
 const int AUD_GRAPH_MAX_TEXT = 256;
 
@@ -982,7 +996,7 @@ const int AUD_OSCILLATOR_PARAM_FREQUENCY = 0;
 const int AUD_OSCILLATOR_PARAM_WAVEFORM = 2;
 
 /// ............................................................................
-/// The resources of the process (lifecycle-001, ticket 25)
+/// The resources of the process (lifecycle-002, ticket 25)
 ///
 /// The graphs of a process share two worker threads, which run the tasks of
 /// the packages (AudHostApi.post_task), and one sample cache budget for the
@@ -1202,7 +1216,8 @@ final class AudGraphMessage extends ffi.Struct {
   external ffi.Array<ffi.Uint8> data;
 }
 
-/// A notification of the realtime thread.
+/// A notification for the control thread: of the realtime thread, or of a
+/// load, which the control thread and the workers report (ticket 25).
 final class AudGraphNotification extends ffi.Struct {
   @ffi.Uint32()
   external int struct_size;
@@ -1327,7 +1342,8 @@ final class AudGraphStats extends ffi.Struct {
   @ffi.Uint64()
   external int realtime_violations;
 
-  /// messages of nodes the reply queue refused
+  /// Messages of nodes dropped: the reply queue was full, or a message was
+  /// beyond AUD_GRAPH_MESSAGE_BYTES or AUD_GRAPH_MAX_MESSAGE_ARGS.
   @ffi.Uint64()
   external int messages_dropped;
 

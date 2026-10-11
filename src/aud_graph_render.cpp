@@ -1548,6 +1548,9 @@ void finishRetirement(AudGraph* graph, uint32_t frames) {
     if (instance->tailRemaining > 0 || popped < instance->retireSequence) continue;
     instance->rtDone = true;
     node.skip = true;
+    // The fade can end before the wrapper fills its block: the messages
+    // it holds never reach the node, their slots come back now.
+    releaseWrapped(graph, instance);
     for (Edge* edge : program->edges) {
       if (touches(edge, instance)) {
         edge->inactive.store(true, std::memory_order_release);
@@ -1773,15 +1776,21 @@ void emitEvent(AudGraph* graph, void* instance, const AudEvent* event) {
 namespace {
 
 // Appends `size` bytes to a message record; false when they do not fit.
+// The check takes no sum, which could wrap on a 32-bit target: a blob of
+// almost 4 GiB would pass it.
 bool appendBytes(AudGraphMessage& record, const void* bytes, size_t size) {
-  if (record.size + size > sizeof(record.data)) return false;
+  if (size > sizeof(record.data) - record.size) return false;
   std::memcpy(record.data + record.size, bytes, size);
   record.size += static_cast<uint32_t>(size);
   return true;
 }
 
-// Packs a message into a record in the layout of AudGraphMessage.
+// Packs a message into a record in the layout of AudGraphMessage; false
+// for a message beyond the limits of osc-002 - more than
+// AUD_GRAPH_MAX_MESSAGE_ARGS arguments or AUD_GRAPH_MESSAGE_BYTES - or with
+// an argument of an unknown type.
 bool packMessage(AudGraphMessage& record, const AudMessage& message) {
+  if (message.num_args > kMaxMessageArgs) return false;
   const char* path = message.path == nullptr ? "" : message.path;
   if (!appendBytes(record, path, std::strlen(path) + 1)) return false;
   for (uint32_t i = 0; i < message.num_args; ++i) {
@@ -1841,8 +1850,8 @@ int32_t runningHandle(const AudGraph* graph, const void* instance) {
 }  // namespace
 
 // [realtime] A node sends a message to the control thread (ticket 25): the
-// reply queue takes a copy; a full queue or a message too large for a
-// record drops it and counts.
+// reply queue takes a copy; a full queue or a message beyond the limits of
+// a record drops it and counts.
 void emitMessage(AudGraph* graph, void* instance, const AudMessage* message) {
   const int32_t handle = runningHandle(graph, instance);
   if (handle == 0 || message == nullptr ||
@@ -1889,6 +1898,27 @@ void releaseMessage(AudGraph* graph, const AudEvent& event) {
   const uint32_t slot = event.words[2];
   if (slot < graph->numMessageSlots) {
     graph->messageSlots[slot].busy.store(false, std::memory_order_release);
+  }
+}
+
+// The wrapper holds the events of the block it fills until the block is
+// full; a node that is done, prepared again or destroyed never gets them.
+void releaseWrapped(AudGraph* graph, NodeInstance* instance) {
+  FixedBlockWrapper* wrapper = instance->wrapper.get();
+  if (wrapper == nullptr) return;
+  for (uint32_t i = 0; i < wrapper->numEvents; ++i) {
+    releaseMessage(graph, wrapper->events[i]);
+  }
+  // A second call frees nothing: a slot may hold another message by then.
+  wrapper->numEvents = 0;
+  wrapper->fill = 0;
+}
+
+// The flag keeps the semaphore at one post per wake; the control thread
+// clears it before it takes the notifications.
+void wakeListener(AudGraph* graph) {
+  if (!graph->wakePending.exchange(true, std::memory_order_acq_rel)) {
+    graph->wake.post();
   }
 }
 
@@ -1977,10 +2007,7 @@ int32_t renderBlock(AudGraph* graph,
     n.value = elapsed;
     notify(graph, n);
   }
-  if (graph->blockNotified &&
-      !graph->wakePending.exchange(true, std::memory_order_acq_rel)) {
-    graph->wake.post();
-  }
+  if (graph->blockNotified) wakeListener(graph);
   return AUD_OK;
 }
 
