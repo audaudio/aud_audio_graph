@@ -14,10 +14,12 @@ import 'package:ffi/ffi.dart';
 
 import 'aud_audio_graph_bindings_generated.dart' as bindings;
 import 'aud_cache_usage.dart';
+import 'aud_event_source.dart';
 import 'aud_graph_notification.dart';
 import 'aud_graph_options.dart';
 import 'aud_graph_state.dart';
 import 'aud_graph_stats.dart';
+import 'aud_graph_timing.dart';
 import 'aud_graph_transport_state.dart';
 import 'aud_load.dart';
 import 'aud_node_message.dart';
@@ -79,9 +81,58 @@ extension AudNativeGraphNotificationToDart on bindings.AudGraphNotification {
         count: count,
         samplePosition: position,
       ),
+      bindings.AUD_NOTIFY_SOURCE_DONE => AudSourceDoneNotification(
+        node: node,
+        source: value,
+        samplePosition: position,
+      ),
       _ => throw ArgumentError.value(type, 'type', 'Unknown notification'),
     };
   }
+}
+
+/// Reads an [AudEventSourceStats] from its native struct (ticket 26).
+extension AudNativeEventSourceStatsToDart on bindings.AudEventSourceStats {
+  /// The counters from their native struct.
+  AudEventSourceStats toDart() => AudEventSourceStats(
+    attached: attached != 0,
+    pushed: pushed,
+    rejected: rejected,
+    delivered: delivered,
+    late: late,
+    maxLateNs: max_late_ns,
+    dropped: dropped,
+    reordered: reordered,
+    releases: releases,
+    maxDelayNs: max_delay_ns,
+    lastWord0: last_word0,
+    lastTimestampNs: last_timestamp_ns,
+    delayHistogram: List.unmodifiable([
+      for (var i = 0; i <= bindings.AUD_SOURCE_DELAY_BINS; i++)
+        delay_histogram[i],
+    ]),
+    latencyHistogram: List.unmodifiable([
+      for (var i = 0; i <= bindings.AUD_SOURCE_LATENCY_BINS; i++)
+        latency_histogram[i],
+    ]),
+  );
+}
+
+/// Reads an [AudGraphTiming] from its native struct (ticket 26).
+extension AudNativeGraphTimingToDart on bindings.AudGraphTiming {
+  /// The timing from its native struct.
+  AudGraphTiming toDart() => AudGraphTiming(
+    valid: flags & bindings.AUD_TIMING_VALID != 0,
+    offline: flags & bindings.AUD_TIMING_OFFLINE != 0,
+    sampleRate: sample_rate,
+    samplePosition: sample_position,
+    hostTimeNs: host_time_ns,
+    frames: frames,
+    outputLatencyFrames: output_latency_frames,
+    maxPeriodNs: max_period_ns,
+    nominalPeriodNs: nominal_period_ns,
+    timeFilterResets: time_filter_resets,
+  );
 }
 
 /// Reads an [AudGraphStats] from its native struct.

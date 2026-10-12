@@ -11,12 +11,13 @@
     "C API aud_audio_graph.h on ABI 0.4: lifecycle (lifecycle-001), node instances, transactions, commands, render function (plugin-002), notifications, taps",
     "Resources of the process (lifecycle-002): two workers with a lock-free task queue, loads with ids, progress and cancellation, one sample cache budget with trims of the registered caches, node reports per block",
     "Messages to nodes (osc-002): engine-owned OSC messages as AUD_EVENT_MESSAGE events, answers through a reply ring and AudGraph.messages",
+    "Event sources (interop-003, midi-003): lock-free UMP queues per native producer into a committed node, fixed or immediate timing, release with note offs and pedal offs, producer hand-over, retirement handshake, per-source statistics with histograms, the engine's timing for the control side (aud_graph_timing), event routes of retiring emitters",
     "Compiler: topological order, feedback nodes split into reader and writer, latency alignment with the low-latency opt-out, buffer reuse by lifetime (graph-001)",
     "Realtime path: adoption of programs with fades and retirement (graph-003), parameter and event queues, time-ordered scheduler with leads, running-note tracker, lossy taps (interop-002)",
     "Time and transport: time filter feed, synthesized host time, internal transport with segments per block, registered providers (time-001)",
     "Reference nodes aud.graph.oscillator, aud.graph.mixer, aud.graph.filter, aud.graph.feedback, aud.graph.tap",
     "Headless host (plugin-002): aud_host_* loads graph documents with presets, state blobs and assets without Dart, saves the whole state, stable parameter ids (FNV-1a, 31 bits), latency, tail, events for the host",
-    "Dart: AudGraph, AudNode, AudGraphTransaction, AudGraphNotification, AudGraphDocument (JSON schema, assets), AudHost, AudOfflineRenderer, AudWavFile, AudLoad, AudNodeMessage, AudCacheUsage",
+    "Dart: AudGraph, AudNode, AudGraphTransaction, AudGraphNotification, AudGraphDocument (JSON schema, assets), AudHost, AudOfflineRenderer, AudWavFile, AudLoad, AudNodeMessage, AudCacheUsage, AudEventSource (AudEventSourceFfi with native addresses), AudEventSourceStats, AudGraphTiming",
     "Native tests under ASan/UBSan, RealtimeSanitizer and ThreadSanitizer with stress tests and the debug watchdog: scripts/test-native.js"
   ],
   "interfaces": {

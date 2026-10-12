@@ -62,6 +62,19 @@ void main() {
       expect(load.toOsc(1), isNull);
       const message = AudMessageNotification(count: 2, samplePosition: 0);
       expect(message.toJson()['count'], 2);
+
+      const sourceDone = AudSourceDoneNotification(
+        node: 3,
+        source: 0x1234,
+        samplePosition: 0,
+      );
+      expect(sourceDone.toJson(), {
+        'type': 'sourceDone',
+        'node': 3,
+        'source': 0x1234,
+        'samplePosition': 0,
+      });
+      expect(sourceDone.toOsc(1), isNull);
     });
 
     test('diagnostics name their code and explain it', () {

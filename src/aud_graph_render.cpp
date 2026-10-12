@@ -446,6 +446,8 @@ void computeStreamTime(AudGraph* graph, const AudRenderRequest* request) {
     if (aud_time_filter_add(&graph->filter, time.sample_position, time.frames,
                             time.host_time_ns)) {
       graph->filterResets.fetch_add(1, std::memory_order_relaxed);
+      // The longest period is measured anew after a reset (ticket 26).
+      graph->maxPeriodNs = 0;
       AudGraphNotification n = makeNotification(graph, AUD_NOTIFY_TIME_RESET);
       n.count = 1;
       n.sample_position = time.sample_position;
@@ -947,6 +949,261 @@ void popScheduled(AudGraph* graph) {
     }
   }
 }
+
+// ............................................................................
+// The event sources (interop-003, midi-003, ticket 26)
+
+// Whether the block's event table takes another event.
+bool blockHasRoom(const AudGraph* graph) {
+  return graph->numBlockEvents < graph->blockEvents.size();
+}
+
+// The event of a packet of a source.
+AudEvent sourceEvent(const SourceEvent& packet, uint32_t port, uint32_t flags) {
+  AudEvent event = aud_event_ump(packet.words, packet.numWords, 0, port);
+  event.flags = flags;
+  return event;
+}
+
+// The control change of a MIDI 1.0 or 2.0 packet: true with the group, the
+// channel and the controller number.
+bool controlChangeOf(const SourceEvent& packet, uint32_t* group,
+                     uint32_t* channel, uint32_t* controller) {
+  const uint32_t word0 = packet.words[0];
+  if (!aud_ump_is_channel_voice(word0)) return false;
+  if (aud_ump_status(word0) != AUD_UMP_STATUS_CONTROL_CHANGE) return false;
+  *group = aud_ump_group(word0);
+  *channel = aud_ump_channel(word0);
+  *controller = (word0 >> 8) & 0x7f;  // data1 of MIDI 1.0, index of MIDI 2.0
+  return true;
+}
+
+// Remembers a sustain or soft pedal the source delivered, so that a
+// release lifts it.
+void notePedal(AudEventSource* source, const SourceEvent& packet) {
+  uint32_t group = 0;
+  uint32_t channel = 0;
+  uint32_t controller = 0;
+  if (!controlChangeOf(packet, &group, &channel, &controller)) return;
+  if (controller == 64) source->sustain[group] |= uint16_t(1u << channel);
+  if (controller == 66) source->soft[group] |= uint16_t(1u << channel);
+}
+
+// Counts a delivered packet: the activity and the input to output time,
+// the time at which the frame it was placed at - `lead` frames before its
+// time - reaches the output, minus its timestamp.
+void countDelivered(AudGraph* graph, AudEventSource* source,
+                    const SourceEvent& packet, uint32_t offset, uint32_t lead) {
+  source->delivered.fetch_add(1, std::memory_order_relaxed);
+  source->lastWord0.store(packet.words[0], std::memory_order_relaxed);
+  source->lastTimestamp.store(packet.timestampNs, std::memory_order_relaxed);
+  const int64_t outputNs =
+      graph->streamTime.host_time_ns +
+      static_cast<int64_t>(std::llround(static_cast<double>(offset + lead) *
+                                        nsPerSample(graph)));
+  const int64_t latency = outputNs - packet.timestampNs;
+  uint32_t bin = AUD_SOURCE_LATENCY_BINS;
+  if (latency >= 0) {
+    const int64_t index = latency / AUD_SOURCE_LATENCY_BIN_NS;
+    if (index < AUD_SOURCE_LATENCY_BINS) bin = static_cast<uint32_t>(index);
+  } else {
+    bin = 0;
+  }
+  source->latencyHistogram[bin].fetch_add(1, std::memory_order_relaxed);
+}
+
+// Places a packet of a source into the block at `offset`; the caller made
+// sure the table has room. False when the target refused it.
+void deliverSourcePacket(AudGraph* graph, AudEventSource* source,
+                         const SourceEvent& packet, uint32_t offset,
+                         uint32_t lead, uint32_t flags) {
+  const AudEvent event = sourceEvent(packet, source->port, flags);
+  addBlockEvent(graph, source->target->rtIndex, event, offset,
+                graph->sourceSequence++);
+  notePedal(source, packet);
+  countDelivered(graph, source, packet, offset, lead);
+}
+
+// The offset of a packet under AUD_SOURCE_TIMING_FIXED, with the lead of
+// the target: AUD_OK, AUD_ERROR_LATE with the offset 0 and the lateness,
+// or AUD_PENDING when the packet belongs to a later block.
+int32_t fixedOffset(AudGraph* graph, const AudEventSource* source,
+                    const SourceEvent& packet, uint32_t lead, uint32_t* offset,
+                    int64_t* lateNs) {
+  AudTimestamp at{};
+  at.struct_size = sizeof(AudTimestamp);
+  at.domain = AUD_TIME_HOST;
+  at.value = packet.timestampNs + source->latencyNs.load(std::memory_order_relaxed);
+  const int32_t result = resolveLead(graph, at, lead, offset);
+  if (result == AUD_OK) return AUD_OK;
+  if (result == AUD_PENDING) return AUD_PENDING;
+  // Late, or a time the snapshot cannot resolve: the block start.
+  *offset = 0;
+  *lateNs = std::max<int64_t>(0, graph->streamTime.host_time_ns - at.value);
+  return AUD_ERROR_LATE;
+}
+
+// Empties the queue of a source for a release: note offs and controllers
+// at the block start, note ons dropped. False when the block's table
+// filled before the queue was empty; the release then goes on in the next
+// block.
+bool flushSource(AudGraph* graph, AudEventSource* source, bool accepts) {
+  NodeInstance* target = source->target;
+  while (const SourceEvent* packet = source->queue->peek()) {
+    const bool noteOn = aud_ump_is_note_on(packet->words[0], packet->words[1]);
+    if (!accepts || noteOn) {
+      source->dropped.fetch_add(1, std::memory_order_relaxed);
+      source->queue->pop();
+      continue;
+    }
+    if (!blockHasRoom(graph)) return false;
+    deliverSourcePacket(graph, source, *packet, 0, 0, 0);
+    // A note off the flush delivers closes its note here - after its rank
+    // was taken, so that it keeps its place before the controllers - and
+    // the closing of the target's notes does not repeat it.
+    if (aud_ump_is_note_off(packet->words[0], packet->words[1])) {
+      target->notes.remove(noteKey(sourceEvent(*packet, source->port, 0)));
+    }
+    source->queue->pop();
+  }
+  return true;
+}
+
+// Lifts the pedals the source delivered: CC64 = 0 and CC66 = 0 on every
+// group and channel that saw one, as MIDI 1.0 control changes.
+void liftPedals(AudGraph* graph, AudEventSource* source) {
+  const uint32_t node = source->target->rtIndex;
+  for (uint32_t group = 0; group < 16; ++group) {
+    for (uint32_t channel = 0; channel < 16; ++channel) {
+      const uint16_t bit = uint16_t(1u << channel);
+      if (source->sustain[group] & bit) {
+        const uint32_t word =
+            aud_ump_midi1_word(group, 0xB0 | channel, 64, 0);
+        addBlockEvent(graph, node, aud_event_ump(&word, 1, 0, source->port), 0,
+                      graph->sourceSequence++);
+      }
+      if (source->soft[group] & bit) {
+        const uint32_t word =
+            aud_ump_midi1_word(group, 0xB0 | channel, 66, 0);
+        addBlockEvent(graph, node, aud_event_ump(&word, 1, 0, source->port), 0,
+                      graph->sourceSequence++);
+      }
+    }
+    source->sustain[group] = 0;
+    source->soft[group] = 0;
+  }
+}
+
+// The target retired in this block: the adoption closed its notes, the
+// pedals the source delivered lift with them, once; the node still runs
+// its fade and forwards what it gets.
+void releaseRetiredTarget(AudGraph* graph, AudEventSource* source) {
+  const NodeInstance* target = source->target;
+  if (source->targetReleased || graph->current == nullptr ||
+      target->rtIndex == UINT32_MAX || !target->rtRetired || target->rtDone) {
+    return;
+  }
+  source->targetReleased = true;
+  liftPedals(graph, source);
+  source->releases.fetch_add(1, std::memory_order_relaxed);
+}
+
+// Carries out a release: the queue empties, then the target's notes close
+// and its pedals lift. True once it is complete.
+bool releaseSource(AudGraph* graph, AudEventSource* source, bool accepts) {
+  if (!flushSource(graph, source, accepts)) return false;
+  if (accepts) {
+    closeNotes(graph, source->target, source->target->rtIndex);
+    liftPedals(graph, source);
+  } else {
+    for (uint32_t group = 0; group < 16; ++group) {
+      source->sustain[group] = 0;
+      source->soft[group] = 0;
+    }
+  }
+  source->releases.fetch_add(1, std::memory_order_relaxed);
+  return true;
+}
+
+// Drains one source with what is left of the budget: peek and pop until a
+// packet belongs to a later block or the table is full.
+void drainSource(AudGraph* graph, AudEventSource* source, bool accepts,
+                 uint32_t* budget) {
+  NodeInstance* target = source->target;
+  const bool immediate = source->timing == AUD_SOURCE_TIMING_IMMEDIATE;
+  while (*budget > 0) {
+    const SourceEvent* packet = source->queue->peek();
+    if (packet == nullptr) return;
+    if (!accepts) {
+      source->dropped.fetch_add(1, std::memory_order_relaxed);
+      source->queue->pop();
+      continue;
+    }
+    if (!blockHasRoom(graph)) return;
+    uint32_t offset = 0;
+    uint32_t lead = 0;
+    uint32_t flags = 0;
+    if (immediate) {
+      flags = AUD_EVENT_FLAG_LIVE;
+    } else {
+      lead = graph->current->nodes[target->rtIndex].lead;
+      int64_t lateNs = 0;
+      const int32_t result =
+          fixedOffset(graph, source, *packet, lead, &offset, &lateNs);
+      if (result == AUD_PENDING) return;
+      if (result == AUD_ERROR_LATE) {
+        source->late.fetch_add(1, std::memory_order_relaxed);
+        if (lateNs > source->maxLateNs.load(std::memory_order_relaxed)) {
+          source->maxLateNs.store(lateNs, std::memory_order_relaxed);
+        }
+      }
+    }
+    deliverSourcePacket(graph, source, *packet, offset, lead, flags);
+    source->queue->pop();
+    *budget -= 1;
+  }
+}
+
+}  // namespace
+
+// [realtime] Drains the sources in the order of their slots: a release
+// first, then the packets whose time has come, within one budget for all
+// sources together (interop-002); a retired source is released and let go.
+void drainSources(AudGraph* graph) {
+  uint32_t budget = graph->config.max_events_per_block;
+  for (std::atomic<AudEventSource*>& slot : graph->sourceSlots) {
+    AudEventSource* source = slot.load(std::memory_order_acquire);
+    if (source == nullptr) continue;
+    const bool accepts =
+        graph->current != nullptr && acceptsEvents(source->target);
+    if (!accepts) releaseRetiredTarget(graph, source);
+    if (source->retired.load(std::memory_order_acquire)) {
+      // The last act: the notes of the target close, then the source is
+      // the control thread's again. A table too full for the flush waits
+      // for the next block, as a release does.
+      if (!releaseSource(graph, source, accepts)) continue;
+      AudGraphNotification n = makeNotification(graph, AUD_NOTIFY_SOURCE_DONE);
+      n.node = source->node;
+      n.value = static_cast<int64_t>(reinterpret_cast<intptr_t>(source));
+      notify(graph, n);
+      source->done.store(true, std::memory_order_release);
+      AudEventSource* expected = source;
+      slot.compare_exchange_strong(expected, nullptr,
+                                   std::memory_order_acq_rel);
+      continue;
+    }
+    if (source->releaseRequested.exchange(false, std::memory_order_acq_rel)) {
+      source->releasing = true;
+    }
+    if (source->releasing) {
+      source->releasing = !releaseSource(graph, source, accepts);
+      continue;
+    }
+    drainSource(graph, source, accepts, &budget);
+  }
+}
+
+namespace {
 
 // ............................................................................
 // The queues (interop-002)
@@ -1679,6 +1936,8 @@ void prepareRealtime(AudGraph* graph) {
 void resetTime(AudGraph* graph) {
   aud_time_filter_reset(&graph->filter);
   graph->synthesizedValid = false;
+  graph->lastRenderValid = false;
+  graph->maxPeriodNs = 0;
 }
 
 int64_t beatNow(AudGraph* graph) {
@@ -1922,6 +2181,45 @@ void wakeListener(AudGraph* graph) {
   }
 }
 
+// Measures the gap since the previous render for the timing of the control
+// side (ticket 26): live, the longest gap between two render starts since
+// the last reset of the time filter; offline, the longest block.
+void measurePeriod(AudGraph* graph, int64_t start, uint32_t frames) {
+  int64_t period = 0;
+  if (graph->offline) {
+    period = static_cast<int64_t>(
+        std::llround(static_cast<double>(frames) * nsPerSample(graph)));
+  } else if (graph->lastRenderValid) {
+    period = start - graph->lastRenderStartNs;
+  }
+  graph->lastRenderStartNs = start;
+  graph->lastRenderValid = true;
+  graph->maxPeriodNs = std::max(graph->maxPeriodNs, period);
+}
+
+// Publishes the timing of the block under the seqlock.
+void publishTiming(AudGraph* graph, uint32_t frames) {
+  TimingSnapshot& t = graph->timing;
+  t.generation.fetch_add(1, std::memory_order_acq_rel);
+  t.flags.store(AUD_TIMING_VALID | (graph->offline ? AUD_TIMING_OFFLINE : 0),
+                std::memory_order_relaxed);
+  t.sampleRate.store(graph->sampleRate, std::memory_order_relaxed);
+  t.samplePosition.store(graph->streamTime.sample_position,
+                         std::memory_order_relaxed);
+  t.hostTimeNs.store(graph->streamTime.host_time_ns, std::memory_order_relaxed);
+  t.frames.store(frames, std::memory_order_relaxed);
+  t.outputLatencyFrames.store(graph->streamTime.output_latency_frames,
+                              std::memory_order_relaxed);
+  t.maxPeriodNs.store(graph->maxPeriodNs, std::memory_order_relaxed);
+  t.nominalPeriodNs.store(
+      static_cast<int64_t>(std::llround(static_cast<double>(graph->maxFrames) *
+                                        nsPerSample(graph))),
+      std::memory_order_relaxed);
+  t.timeFilterResets.store(graph->filterResets.load(std::memory_order_relaxed),
+                           std::memory_order_relaxed);
+  t.generation.fetch_add(1, std::memory_order_acq_rel);
+}
+
 // Reports what the watchdog caught in the block (ticket 20).
 void reportWatchdog(AudGraph* graph) {
   const uint32_t hits = watchdogBlockHits();
@@ -1942,6 +2240,7 @@ int32_t renderBlock(AudGraph* graph,
   const uint32_t frames = request->frames;
   resetScratch(graph);
   computeStreamTime(graph, request);
+  measurePeriod(graph, start, frames);
   adoptPending(graph);
   resetNodeRanges(graph);
   if (!graph->stateObserved) {
@@ -1958,6 +2257,7 @@ int32_t renderBlock(AudGraph* graph,
   applyTransportResets(graph);
   deliverPopped(graph);
   popScheduled(graph);
+  drainSources(graph);
   for (uint32_t i = 0; i < request->num_events; ++i) {
     const AudEvent& event = request->events[i];
     // Only the engine creates message events (osc-002).
@@ -1986,6 +2286,7 @@ int32_t renderBlock(AudGraph* graph,
   }
   graph->samplePosition.store(graph->streamTime.sample_position + frames,
                               std::memory_order_release);
+  publishTiming(graph, frames);
   graph->scheduledCount.store(graph->scheduler.count, std::memory_order_release);
   graph->blocksRendered.fetch_add(1, std::memory_order_relaxed);
   graph->framesRendered.fetch_add(frames, std::memory_order_relaxed);

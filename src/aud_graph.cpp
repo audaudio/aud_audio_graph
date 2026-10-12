@@ -500,13 +500,16 @@ void destroyInstance(AudGraph* graph, NodeInstance* instance) {
   endLoadsOf(graph, instance->handle);
 }
 
-// Frees what no program references any more: finished instances and the
-// edges that faded out.
+// Frees what no program references any more: finished instances - unless
+// a source that is not yet freed targets them (ticket 26) - and the edges
+// that faded out.
 void collect(AudGraph* graph) {
+  collectSources(graph);
   for (auto it = graph->instances.begin(); it != graph->instances.end();) {
     NodeInstance* instance = it->get();
     if (instance->retired && instance->programs == 0 &&
-        instance->done.load(std::memory_order_acquire)) {
+        instance->done.load(std::memory_order_acquire) &&
+        !sourceTargets(graph, instance)) {
       destroyInstance(graph, instance);
       it = graph->instances.erase(it);
     } else {
@@ -529,6 +532,15 @@ void collect(AudGraph* graph) {
       ++it;
     }
   }
+  // An event route of a retiring emitter goes with either of its ends.
+  auto& routes = graph->zombieEventEdges;
+  routes.erase(std::remove_if(routes.begin(), routes.end(),
+                              [graph](const EventEdgeId& id) {
+                                return instanceOf(graph, id.from) == nullptr ||
+                                       (id.to != AUD_GRAPH_NODE &&
+                                        instanceOf(graph, id.to) == nullptr);
+                              }),
+               routes.end());
 }
 
 // Publishes a compiled program; the realtime thread adopts it at the next
@@ -1128,8 +1140,10 @@ AUD_EXPORT AudGraph* aud_graph_create(const AudGraphConfig* config) {
   graph->scheduler.init(c.scheduler_capacity);
   graph->popped.resize(c.max_events_per_block);
   // The block's events: a budget of queued events, a budget of scheduled
-  // ones and the note offs of one full tracker.
-  graph->blockEvents.resize(2 * c.max_events_per_block + NoteTracker::kCapacity);
+  // ones, a budget of the event sources, the note offs of one full tracker
+  // and the pedal offs of a release (ticket 26).
+  graph->blockEvents.resize(3 * c.max_events_per_block + NoteTracker::kCapacity +
+                            kMaxPedalOffs);
   graph->emitted.resize(c.max_events_per_block);
   graph->nodeEvents.resize(graph->blockEvents.size() + graph->emitted.size());
   graph->deferred.resize(graph->nodeEvents.size());
@@ -1153,6 +1167,7 @@ AUD_EXPORT void aud_graph_destroy(AudGraph* graph) {
   freeRetiredPrograms(graph);
   releaseProgram(graph, graph->current);
   graph->current = nullptr;
+  destroySources(graph);
   for (auto& instance : graph->instances) destroyInstance(graph, instance.get());
   graph->instances.clear();
   for (TransportProvider& provider : graph->providers) {
@@ -1573,10 +1588,28 @@ AUD_EXPORT int32_t aud_graph_commit(AudGraph* graph) {
     retiring.push_back(instance);
   }
   for (int32_t handle : dropped) dropInstance(graph, handle);
+  // A retiring emitter keeps its event routes to the nodes that stay, as
+  // its audio edges stay, until it is done: the note offs it forwards
+  // while its notes close still arrive (ticket 26).
+  std::vector<EventEdgeId> zombies;
+  for (NodeInstance* instance : retiring) {
+    for (const EventEdgeId& id : graph->topology.events) {
+      if (id.from != instance->handle || id.to == instance->handle) continue;
+      const auto& removed = graph->workingRemoved;
+      if (std::find(removed.begin(), removed.end(), id.to) != removed.end()) {
+        continue;
+      }
+      zombies.push_back(id);
+    }
+  }
+  const size_t zombiesBefore = graph->zombieEventEdges.size();
+  graph->zombieEventEdges.insert(graph->zombieEventEdges.end(), zombies.begin(),
+                                 zombies.end());
   int32_t error = AUD_OK;
   Program* program = compileProgram(graph, graph->working, &error);
   if (program == nullptr) {
     for (NodeInstance* instance : retiring) instance->retired = false;
+    graph->zombieEventEdges.resize(zombiesBefore);
     return error;
   }
   graph->topology = graph->working;

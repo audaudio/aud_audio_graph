@@ -125,6 +125,27 @@ void main() {
         expect(bindings.aud_host_latency(nullptr), lessThan(0));
         expect(bindings.aud_host_tail(nullptr), 0);
         expect(bindings.aud_host_render(nullptr, nullptr), lessThan(0));
+        // The calls of ticket 26.
+        expect(
+          bindings.aud_graph_create_event_source(nullptr, nullptr, nullptr),
+          nullptr,
+        );
+        expect(
+          bindings.aud_graph_destroy_event_source(nullptr, nullptr),
+          lessThan(0),
+        );
+        expect(bindings.aud_event_source_attach(nullptr, 1), lessThan(0));
+        expect(bindings.aud_event_source_detach(nullptr, 1), lessThan(0));
+        expect(
+          bindings.aud_event_source_push(nullptr, nullptr, 0, 0),
+          lessThan(0),
+        );
+        expect(bindings.aud_event_source_size(nullptr), 0);
+        expect(bindings.aud_event_source_capacity(nullptr), 0);
+        expect(bindings.aud_event_source_set_latency(nullptr, 0), lessThan(0));
+        expect(bindings.aud_event_source_stats(nullptr, nullptr), lessThan(0));
+        bindings.aud_event_source_release(nullptr);
+        expect(bindings.aud_graph_timing(nullptr, nullptr), lessThan(0));
         expect(
           bindings.aud_host_last_error(nullptr).cast<Utf8>().toDartString(),
           isEmpty,

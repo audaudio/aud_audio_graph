@@ -15,7 +15,9 @@
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -624,4 +626,365 @@ AUD_TEST(stress_soaks_a_running_stream_with_every_control_call) {
   const AudGraphStats s = f.stats();
   AUD_CHECK(s.blocks_rendered > 100 && s.realtime_violations == 0);
   AUD_CHECK(g_lastPreset->overlaps.load() == 0);
+}
+
+// ############################################################################
+// Event sources (ticket 26)
+
+namespace {
+
+// The notes the recorder saw on and not off again, in the order of the
+// records: a stuck note is a note on without a later note off.
+std::set<uint32_t> soundingNotes() {
+  std::set<uint32_t> sounding;
+  for (const Record& r : g_records) {
+    if (r.type != AUD_EVENT_UMP) continue;
+    const uint32_t key = (aud_ump_channel(r.word0) << 8) | aud_ump_note(r.word0);
+    if (aud_ump_is_note_on(r.word0, 0)) sounding.insert(key);
+    if (aud_ump_is_note_off(r.word0, 0)) sounding.erase(key);
+  }
+  return sounding;
+}
+
+uint32_t countRecords(bool (*predicate)(uint32_t word0)) {
+  uint32_t count = 0;
+  for (const Record& r : g_records) {
+    if (r.type == AUD_EVENT_UMP && predicate(r.word0)) count += 1;
+  }
+  return count;
+}
+
+bool isSysEx(uint32_t word0) {
+  return aud_ump_message_type(word0) == AUD_UMP_TYPE_DATA64;
+}
+bool isNote(uint32_t word0) {
+  return aud_ump_is_note_on(word0, 0) || aud_ump_is_note_off(word0, 0);
+}
+
+// A stream on its own thread that renders a block as soon as its time has
+// come on the synthesized timeline, so that the host times of the blocks
+// keep step with the clock the producers stamp with.
+struct PacedStream {
+  Fixture& f;
+  uint32_t frames;
+  std::atomic<bool> stop{false};
+  std::atomic<uint32_t> blocks{0};
+  std::thread thread;
+
+  PacedStream(Fixture& fixture, uint32_t blockFrames)
+      : f(fixture), frames(blockFrames), thread([this] { run(); }) {}
+
+  void run() {
+    const auto origin = std::chrono::steady_clock::now();
+    const auto block = std::chrono::nanoseconds(
+        static_cast<int64_t>(std::llround(frames * 1e9 / kRate)));
+    uint32_t n = 0;
+    while (!stop.load(std::memory_order_acquire)) {
+      f.render(frames);
+      blocks.fetch_add(1, std::memory_order_release);
+      n += 1;
+      std::this_thread::sleep_until(origin + block * n);
+    }
+  }
+
+  // Renders `count` more blocks and stops.
+  void finish(uint32_t count) {
+    const uint32_t target = blocks.load(std::memory_order_acquire) + count;
+    while (blocks.load(std::memory_order_acquire) < target) {
+      std::this_thread::yield();
+    }
+    stop.store(true, std::memory_order_release);
+    thread.join();
+  }
+};
+
+}  // namespace
+
+AUD_TEST(stress_source_takes_10000_events_per_second_from_a_producer_thread) {
+  Fixture f;
+  const int32_t recorder = f.node("aud.test.recorder");
+  f.commit([&] { f.connect(recorder, AUD_GRAPH_NODE); });
+  aud_graph_start(f.graph);
+  AudEventSource* source =
+      makeSource(f, recorder, AUD_SOURCE_TIMING_FIXED, 20000000);
+  PacedStream stream(f, 256);
+  // Ten packets every millisecond for ten seconds: note ons and note
+  // offs in pairs, stamped now.
+  std::atomic<uint32_t> pushed{0};
+  std::atomic<uint32_t> refused{0};
+  std::thread producer([&] {
+    AUD_CHECK(aud_event_source_attach(source, 1) == AUD_OK);
+    const auto origin = std::chrono::steady_clock::now();
+    uint32_t note = 0;
+    for (uint32_t ms = 1; ms <= 10000; ++ms) {
+      for (uint32_t k = 0; k < 5; ++k) {
+        const uint32_t pitch = 1 + note % 120;
+        note += 1;
+        const uint32_t on = aud_ump_midi1_word(0, 0x90, pitch, 100);
+        const uint32_t off = aud_ump_midi1_word(0, 0x80, pitch, 64);
+        if (aud_event_source_push(source, &on, 1, 0) == AUD_OK) {
+          pushed.fetch_add(1, std::memory_order_relaxed);
+          while (aud_event_source_push(source, &off, 1, 0) != AUD_OK) {
+            std::this_thread::yield();
+          }
+          pushed.fetch_add(1, std::memory_order_relaxed);
+        } else {
+          refused.fetch_add(1, std::memory_order_relaxed);
+        }
+      }
+      std::this_thread::sleep_until(origin + std::chrono::milliseconds(ms));
+    }
+    AUD_CHECK(aud_event_source_detach(source, 1) == AUD_OK);
+  });
+  producer.join();
+  stream.finish(8);
+  const AudEventSourceStats s = sourceStats(source);
+  AUD_CHECK(s.pushed == pushed.load());
+  AUD_CHECK(s.delivered == s.pushed);
+  AUD_CHECK(s.pushed >= 99000);  // a stalled machine refuses a few
+  AUD_CHECK(s.dropped == 0 && s.reordered == 0);
+  AUD_CHECK(g_records.size() == s.delivered);
+  AUD_CHECK(soundingNotes().empty());
+  AUD_CHECK(f.stats().realtime_violations == 0);
+  AUD_CHECK(f.stats().events_dropped == 0);
+  std::printf("  10 s at 10,000 events/s: %llu delivered, %llu late, max %.2f ms late, "
+              "max delay %.3f ms, %u refused\n",
+              static_cast<unsigned long long>(s.delivered),
+              static_cast<unsigned long long>(s.late),
+              static_cast<double>(s.max_late_ns) / 1e6,
+              static_cast<double>(s.max_delay_ns) / 1e6, refused.load());
+}
+
+AUD_TEST(stress_source_plays_64_note_chords_every_block) {
+  Fixture f;
+  const int32_t recorder = f.node("aud.test.recorder");
+  f.commit([&] { f.connect(recorder, AUD_GRAPH_NODE); });
+  aud_graph_start(f.graph);
+  AudEventSource* source = makeSource(f, recorder, AUD_SOURCE_TIMING_IMMEDIATE);
+  for (uint32_t block = 0; block < 200; ++block) {
+    const bool on = block % 2 == 0;
+    for (uint32_t n = 0; n < 64; ++n) {
+      const uint32_t word = on ? aud_ump_midi1_word(0, 0x90, 30 + n, 100)
+                               : aud_ump_midi1_word(0, 0x80, 30 + n, 64);
+      AUD_CHECK(pushWord(source, word) == AUD_OK);
+    }
+    f.render(256);
+    AUD_CHECK(g_records.size() == 64 * (block + 1));
+    AUD_CHECK(soundingNotes().size() == (on ? 64 : 0));
+  }
+  AUD_CHECK(sourceStats(source).delivered == 12800);
+  AUD_CHECK(f.stats().events_dropped == 0);
+  AUD_CHECK(f.stats().realtime_violations == 0);
+}
+
+AUD_TEST(stress_source_survives_sysex_floods_between_the_notes) {
+  Fixture f;
+  const int32_t recorder = f.node("aud.test.recorder");
+  f.commit([&] { f.connect(recorder, AUD_GRAPH_NODE); });
+  aud_graph_start(f.graph);
+  AudEventSource* source = makeSource(f, recorder, AUD_SOURCE_TIMING_IMMEDIATE);
+  Random random(7);
+  uint32_t sysex = 0;
+  uint32_t notes = 0;
+  for (uint32_t burst = 0; burst < 40; ++burst) {
+    // A 64 KiB dump is 10923 packets of 6 bytes: a burst of 1000 at a
+    // time, with a note on and off around each burst.
+    const uint32_t pitch = 40 + random.below(40);
+    const uint32_t on = aud_ump_midi1_word(0, 0x90, pitch, 100);
+    AUD_CHECK(pushWord(source, on) == AUD_OK);
+    notes += 1;
+    for (uint32_t i = 0; i < 1000; ++i) {
+      uint32_t words[2] = {0x30260000u | (random.next() & 0x7f7f),
+                           random.next() & 0x7f7f7f7fu};
+      if (aud_event_source_push(source, words, 2, 0) == AUD_OK) sysex += 1;
+    }
+    const uint32_t off = aud_ump_midi1_word(0, 0x80, pitch, 64);
+    AUD_CHECK(pushWord(source, off) == AUD_OK);
+    notes += 1;
+    f.render(256);
+    f.render(256);
+  }
+  for (int i = 0; i < 50; ++i) f.render(256);
+  AUD_CHECK(sysex == 40000);
+  AUD_CHECK(countRecords(isSysEx) == sysex);
+  AUD_CHECK(countRecords(isNote) == notes);
+  AUD_CHECK(soundingNotes().empty());
+  AUD_CHECK(sourceStats(source).delivered == sysex + notes);
+  AUD_CHECK(f.stats().events_dropped == 0);
+  AUD_CHECK(f.stats().realtime_violations == 0);
+}
+
+AUD_TEST(stress_source_release_during_a_burst_leaves_no_note_on) {
+  Fixture f;
+  const int32_t recorder = f.node("aud.test.recorder");
+  f.commit([&] { f.connect(recorder, AUD_GRAPH_NODE); });
+  aud_graph_start(f.graph);
+  AudEventSource* source = makeSource(f, recorder, AUD_SOURCE_TIMING_IMMEDIATE);
+  std::atomic<bool> stop{false};
+  std::atomic<uint32_t> blocks{0};
+  // The stream renders every millisecond, the producer pushes pairs of
+  // note on and note off as fast as the queue takes them, a third thread
+  // raises release every three milliseconds.
+  std::thread stream([&] {
+    while (!stop.load(std::memory_order_acquire)) {
+      f.render(256);
+      blocks.fetch_add(1, std::memory_order_release);
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  });
+  std::thread producer([&] {
+    Random random(3);
+    AUD_CHECK(aud_event_source_attach(source, 9) == AUD_OK);
+    // At most 30,000 triples, so that the recorder's reserved vector holds
+    // what arrives without growing on the audio thread.
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+    for (uint32_t i = 0; i < 30000 && std::chrono::steady_clock::now() < until; ++i) {
+      const uint32_t pitch = 1 + random.below(120);
+      pushWord(source, aud_ump_midi1_word(0, 0x90, pitch, 100));
+      pushWord(source, ccWord(64, 127, random.below(16)));
+      pushWord(source, aud_ump_midi1_word(0, 0x80, pitch, 64));
+    }
+    AUD_CHECK(aud_event_source_detach(source, 9) == AUD_OK);
+  });
+  std::thread releaser([&] {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+    while (std::chrono::steady_clock::now() < until) {
+      aud_event_source_release(source);
+      std::this_thread::sleep_for(std::chrono::milliseconds(3));
+    }
+  });
+  producer.join();
+  releaser.join();
+  aud_event_source_release(source);
+  const uint32_t target = blocks.load(std::memory_order_acquire) + 4;
+  while (blocks.load(std::memory_order_acquire) < target) std::this_thread::yield();
+  stop.store(true, std::memory_order_release);
+  stream.join();
+  const AudEventSourceStats s = sourceStats(source);
+  AUD_CHECK(s.releases >= 2);
+  AUD_CHECK(s.pushed > 1000);
+  AUD_CHECK(soundingNotes().empty());
+  AUD_CHECK(aud_event_source_size(source) == 0);
+  AUD_CHECK(f.stats().events_dropped == 0);
+  AUD_CHECK(f.stats().realtime_violations == 0);
+  std::printf("  release during a burst: %llu pushed, %llu dropped, %llu releases\n",
+              static_cast<unsigned long long>(s.pushed),
+              static_cast<unsigned long long>(s.dropped),
+              static_cast<unsigned long long>(s.releases));
+}
+
+AUD_TEST(stress_removing_a_pass_through_node_closes_the_chord_and_the_pedal) {
+  Fixture f;
+  const int32_t emitter = f.node("aud.test.emitter");
+  const int32_t recorder = f.node("aud.test.recorder");
+  f.commit([&] {
+    f.connect(recorder, AUD_GRAPH_NODE);
+    aud_graph_connect_events(f.graph, emitter, 0, recorder, 0);
+  });
+  aud_graph_start(f.graph);
+  AudEventSource* source = makeSource(f, emitter, AUD_SOURCE_TIMING_IMMEDIATE);
+  for (uint32_t n = 0; n < 8; ++n) {
+    pushWord(source, aud_ump_midi1_word(0, 0x90, 60 + n, 100));
+  }
+  pushWord(source, ccWord(64, 127));
+  pushWord(source, ccWord(66, 127, 3));
+  f.render(256);
+  AUD_CHECK(g_records.size() == 10);
+  AUD_CHECK(soundingNotes().size() == 8);
+  // The pass-through node goes while the chord and the pedals are held:
+  // its routes stay until it is done, so the recorder sees every note
+  // closed and both pedals off.
+  f.commit([&] { aud_graph_remove_node(f.graph, emitter); });
+  g_records.clear();
+  f.render(256);
+  AUD_CHECK(g_records.size() == 10);
+  AUD_CHECK(soundingNotes().empty());
+  uint32_t pedalsOff = 0;
+  for (const Record& r : g_records) {
+    if (aud_ump_status(r.word0) == AUD_UMP_STATUS_CONTROL_CHANGE &&
+        aud_ump_midi1_data2(r.word0) == 0) {
+      pedalsOff += 1;
+    }
+  }
+  AUD_CHECK(pedalsOff == 2);
+  for (int i = 0; i < 3; ++i) f.render(256);
+  AUD_CHECK(f.countNotifications(AUD_NOTIFY_NODE_DONE) == 1);
+  AUD_CHECK(aud_graph_destroy_event_source(f.graph, source) == AUD_OK);
+  f.render(256);
+  f.takeAll();
+  f.render(256);
+  f.takeAll();
+  AUD_CHECK(aud_graph_node_descriptor(f.graph, emitter) == nullptr);
+  AUD_CHECK(f.stats().realtime_violations == 0);
+}
+
+AUD_TEST(stress_time_filter_reset_during_held_notes_keeps_the_timing) {
+  Fixture f;
+  const int32_t recorder = f.node("aud.test.recorder");
+  f.commit([&] { f.connect(recorder, AUD_GRAPH_NODE); });
+  aud_graph_start(f.graph);
+  TimedStream stream(f);
+  // C = 10 ms = 480 frames.
+  AudEventSource* source = makeSource(f, recorder, AUD_SOURCE_TIMING_FIXED, 10000000);
+  for (uint32_t n = 0; n < 4; ++n) {
+    pushWord(source, aud_ump_midi1_word(0, 0x90, 60 + n, 100), stream.atFrame(99.5));
+  }
+  for (int block = 0; block < 4; ++block) stream.render(256);
+  AUD_CHECK(g_records.size() == 4);
+  AUD_CHECK(g_records[0].position == 512 && g_records[0].offset == 68);
+  // A route change: the stream continues at another position, the
+  // filter resets. The note offs come stamped on the new timeline and
+  // land at their frame; nothing hangs.
+  stream.position = 100000;
+  stream.render(256);
+  AUD_CHECK(f.stats().time_filter_resets == 1);
+  for (uint32_t n = 0; n < 4; ++n) {
+    pushWord(source, aud_ump_midi1_word(0, 0x80, 60 + n, 64), stream.atFrame(100355.5));
+  }
+  for (int block = 0; block < 4; ++block) stream.render(256);
+  AUD_CHECK(g_records.size() == 8);
+  AUD_CHECK(g_records[4].position == 100768 && g_records[4].offset == 68);
+  AUD_CHECK(soundingNotes().empty());
+  const AudEventSourceStats s = sourceStats(source);
+  AUD_CHECK(s.late == 0 && s.delivered == 8);
+  AUD_CHECK(timingOf(f.graph).time_filter_resets == 1);
+  AUD_CHECK(f.stats().realtime_violations == 0);
+}
+
+AUD_TEST(stress_variable_blocks_offline_keep_fixed_timing_to_the_sample) {
+  Fixture f(0, 1, 1024);
+  const int32_t recorder = f.node("aud.test.recorder");
+  f.commit([&] { f.connect(recorder, AUD_GRAPH_NODE); });
+  aud_graph_start(f.graph);
+  // C = 20 ms = 960 frames on the virtual timeline from 5 s.
+  const int64_t origin = 5000000000LL;
+  AudEventSource* source = makeSource(f, recorder, AUD_SOURCE_TIMING_FIXED, 20000000);
+  for (uint32_t k = 0; k < 50; ++k) {
+    const double frame = k * 333.0 - 0.5;
+    const int64_t at = origin + static_cast<int64_t>(std::llround(frame * 1e9 / kRate));
+    pushWord(source, aud_ump_midi1_word(0, k % 2 == 0 ? 0x90 : 0x80, 60, 100), at);
+  }
+  const uint32_t sizes[] = {64, 128, 960, 256, 17, 512, 300, 1024, 100};
+  const uint32_t frames = 50 * 333 + 960 + 2048;
+  std::vector<float> out(frames, 0.0f);
+  float* channel = out.data();
+  AudAudioBus bus{sizeof(AudAudioBus), 1, &channel};
+  AudOfflineRequest request{};
+  request.struct_size = sizeof(AudOfflineRequest);
+  request.frames = frames;
+  request.num_block_sizes = 9;
+  request.block_sizes = sizes;
+  request.outputs = &bus;
+  request.start_host_time_ns = origin;
+  AUD_CHECK(aud_graph_render_offline(f.graph, &request) == AUD_OK);
+  AUD_CHECK(g_records.size() == 50);
+  for (uint32_t k = 0; k < g_records.size(); ++k) {
+    AUD_CHECK(g_records[k].position + g_records[k].offset == k * 333 + 960);
+  }
+  AUD_CHECK(soundingNotes().empty());
+  AUD_CHECK(sourceStats(source).late == 0);
+  const AudGraphTiming t = timingOf(f.graph);
+  AUD_CHECK(t.flags == (AUD_TIMING_VALID | AUD_TIMING_OFFLINE));
+  AUD_CHECK(t.max_period_ns == 21333333);
+  AUD_CHECK(f.stats().realtime_violations == 0);
 }

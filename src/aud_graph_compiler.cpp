@@ -654,25 +654,16 @@ class Compiler {
   // Event routes
 
   void buildRoutes() {
-    for (const EventEdgeId& id : topology_.events) {
-      EventRoute route;
-      if (id.from == AUD_GRAPH_NODE) {
-        route.fromNode = kGraphVertex;
-      } else {
-        const auto from = nodeIndex_.find(id.from);
-        if (from == nodeIndex_.end()) continue;
-        route.fromNode = from->second;
+    for (const EventEdgeId& id : topology_.events) addRoute(id);
+    // The routes of retiring emitters stay while the emitter is in the
+    // program (ticket 26); an end that is gone drops the route.
+    for (const EventEdgeId& id : graph_->zombieEventEdges) {
+      const auto from = nodeIndex_.find(id.from);
+      if (from == nodeIndex_.end() || !instanceAt(from->second)->retired) {
+        continue;
       }
-      route.fromPort = id.fromPort;
-      if (id.to == AUD_GRAPH_NODE) {
-        route.toNode = kGraphVertex;
-      } else {
-        const auto to = nodeIndex_.find(id.to);
-        if (to == nodeIndex_.end()) continue;
-        route.toNode = to->second;
-      }
-      route.toPort = id.toPort;
-      program_->routes.push_back(route);
+      if (id.to != AUD_GRAPH_NODE && nodeIndex_.count(id.to) == 0) continue;
+      addRoute(id);
     }
     std::sort(program_->routes.begin(), program_->routes.end(),
               [](const EventRoute& a, const EventRoute& b) {
@@ -684,6 +675,28 @@ class Compiler {
         program_->graphFanout += 1;
       }
     }
+  }
+
+  // Adds the route of an event connection whose ends are in the program.
+  void addRoute(const EventEdgeId& id) {
+    EventRoute route;
+    if (id.from == AUD_GRAPH_NODE) {
+      route.fromNode = kGraphVertex;
+    } else {
+      const auto from = nodeIndex_.find(id.from);
+      if (from == nodeIndex_.end()) return;
+      route.fromNode = from->second;
+    }
+    route.fromPort = id.fromPort;
+    if (id.to == AUD_GRAPH_NODE) {
+      route.toNode = kGraphVertex;
+    } else {
+      const auto to = nodeIndex_.find(id.to);
+      if (to == nodeIndex_.end()) return;
+      route.toNode = to->second;
+    }
+    route.toPort = id.toPort;
+    program_->routes.push_back(route);
   }
 
   // ..........................................................................

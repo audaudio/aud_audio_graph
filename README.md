@@ -78,6 +78,57 @@ The graphs of a process share what the packages need for their assets
 - The engine reads the tail of a node at every commit, so that a tail may
   follow what the node loaded.
 
+## Event sources (ticket 26)
+
+External MIDI - and later OSC and Link - reaches the audio thread through
+event sources (interop-003, midi-003): a lock-free queue of UMP packets
+with host timestamps per producer, created on the control thread for a
+committed node and drained by the realtime thread every block, after the
+scheduler and before the host's events.
+
+- `aud_graph_create_event_source` takes an `AudEventSourceConfig` - the
+  target node and event inlet, the capacity (a power of two, 4096 by
+  default), the timing policy and the latency C -; at most
+  `AUD_GRAPH_MAX_EVENT_SOURCES` (64) per graph.
+- Timing: under `AUD_SOURCE_TIMING_FIXED` a packet sounds at its timestamp
+  plus C at the output, pre-delivered by the lead of its path; under
+  `AUD_SOURCE_TIMING_IMMEDIATE` it plays at the start of the block that
+  drains it and carries `AUD_EVENT_FLAG_LIVE`. A packet whose time lies
+  beyond the block stays in the queue (peek and pop), one that missed its
+  time plays at the block start and counts as late with its lateness; the
+  graph's policy of dropping late events does not apply. A timestamp
+  earlier than its predecessor's is raised and counted; no lookahead is
+  checked, so offline producers work. `max_events_per_block` bounds what
+  all sources together deliver per block, the rest follows in order.
+- `aud_event_source_push` takes one packet of one to four words from one
+  producer thread at a time; `aud_event_source_attach` and `_detach` hand
+  the source from one producer to the next (CAS on a token,
+  `AUD_GRAPH_ERROR_BUSY` while another is attached). A full queue refuses
+  the push; a note off that does not fit raises release.
+- `aud_event_source_release`, from any thread: before the next drain the
+  queue empties - note offs and controllers at the block start, note ons
+  dropped and counted -, then the target's notes close and CC64 = 0 and
+  CC66 = 0 lift the pedals the source delivered. A removed target gets the
+  pedal offs with its note offs; the routes of a retiring node to living
+  nodes stay until it is done, so the note offs a pass-through node
+  forwards arrive downstream.
+- `aud_graph_destroy_event_source` retires the source; the realtime
+  thread releases the notes and lets go at its next block
+  (`AUD_NOTIFY_SOURCE_DONE`), `aud_graph_take_notifications` frees it. A
+  node a live source targets is kept until the source is freed.
+- `aud_event_source_stats`: pushed, rejected, delivered, late and the
+  maximum lateness, dropped, reordered, releases, the maximum delivery
+  delay (push time minus timestamp, taken on the producer thread), the
+  last delivered packet and its timestamp, a histogram of the delivery
+  delay (50 us bins up to 25 ms) and one of the input to output time
+  (0.25 ms bins up to 256 ms), each with an overflow bin.
+- `aud_graph_timing` is the timing of the last block for the control
+  side: the sample position and its fitted output time, the frames, the
+  output latency the stream reported, the longest period between two
+  renders since the last reset of the time filter (offline: the longest
+  block), the nominal period and the resets - what a bridge needs for
+  C = P + L + m.
+
 ## The headless host (ticket 20)
 
 The C API `aud_host_*` runs a graph without Dart, as the plugin shells do
@@ -189,6 +240,16 @@ graph.cacheBudget = 128 << 20;                           // of the process
 print(graph.cacheUsage.bytes);                           // AudCacheUsage
 graph.waitTasks();                                       // every task of the process
 host.waitLoads();                                        // the loads of the host's document
+
+final source = graph.createEventSource(sampler,         // ticket 26: one producer at a time
+    timing: AudSourceTiming.fixed, latencyNs: 27000000);
+source.push(packet.words, hostTimeNs: AudClock.nowNs()); // false when the queue is full
+source.release();                                        // notes off, pedals up
+print(source.stats.latencyP99Ns);                        // percentiles of the histograms
+print(graph.timing.maxPeriodNs);                         // P of C = P + L + m
+source.address;                                          // for a native producer, with
+AudEventSourceFfi.pushFunctionAddress;                   // the push, release and size functions
+source.dispose();                                        // AudSourceDoneNotification follows
 ```
 
 The notifications carry `AudLoadNotification` for the loads and

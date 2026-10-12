@@ -61,6 +61,8 @@ enum {
   // The realtime thread allocated, freed or logged: the debug watchdog
   // (ticket 20) counted a violation of the realtime contract.
   AUD_GRAPH_ERROR_REALTIME_VIOLATION = -100,
+  // Another producer is attached to the event source (ticket 26).
+  AUD_GRAPH_ERROR_BUSY = -101,
 };
 
 // What the watchdog caught, OR-ed into `value` of its diagnostic.
@@ -192,6 +194,10 @@ enum {
   // Nodes sent `count` messages in the block (AudHostApi.emit_message);
   // aud_graph_take_messages takes them.
   AUD_NOTIFY_MESSAGE = 9,
+  // The retired event source whose address `value` holds released the
+  // notes of its target `node` and let go of the realtime thread; the
+  // graph frees it as the notification is taken (ticket 26).
+  AUD_NOTIFY_SOURCE_DONE = 10,
 };
 
 // A notification for the control thread: of the realtime thread, or of a
@@ -507,6 +513,189 @@ AUD_EXPORT int32_t aud_graph_set_transport_provider(AudGraph* graph,
 
 // [control] The sample position of the next block.
 AUD_EXPORT int64_t aud_graph_sample_position(AudGraph* graph);
+
+// ............................................................................
+// Event sources (interop-003, midi-003, ticket 26)
+//
+// A source is a lock-free queue of UMP packets with host timestamps from
+// one native producer - CoreMIDI's receive thread, Android's receiver
+// thread, a Dart isolate, an OSC server - into one committed node; the
+// realtime thread drains it every block after the scheduler and before the
+// host's events. The drain peeks and pops: a packet whose time lies beyond
+// the block stays in the queue and ends the drain of its source, a packet
+// that does not fit the block's event table stays too, so no note off is
+// lost; at most max_events_per_block packets of all sources leave their
+// queues per block, the rest follows in order. A producer pushes in time
+// order; a timestamp earlier than its predecessor's is raised to it and
+// counted. The push checks no lookahead, so an offline producer works.
+// Packets for a target that takes no more events - retired, or not yet
+// adopted - are dropped and counted. The graph's policy of dropping late
+// events does not apply: a late packet plays at the start of the block.
+//
+// Producers: one thread at a time. A producer attaches with a token
+// before its first push and detaches after its last; a new producer
+// attaches only after the previous one detached. The detach stores with
+// release order, the attach loads with acquire order, so the pushes of
+// the two threads are ordered through the token; two producers at once
+// are a data race that ThreadSanitizer reports.
+//
+// Lifetime: aud_graph_create_event_source on the control thread for a
+// committed target; aud_graph_destroy_event_source retires it, the
+// realtime thread releases its notes and lets go at its next block
+// (AUD_NOTIFY_SOURCE_DONE), aud_graph_take_notifications frees it. A
+// node a live source targets is kept until the source is freed. A graph
+// that is not running frees the source at once.
+
+// The sources a graph can hold.
+#define AUD_GRAPH_MAX_EVENT_SOURCES 64
+
+// Timing policies of an event source (midi-003).
+enum {
+  // An event sounds at its timestamp + latency_ns at the output; one that
+  // misses its target plays at the start of the block and counts as late.
+  // The events carry no AUD_EVENT_FLAG_LIVE, so the lead of the path
+  // places them.
+  AUD_SOURCE_TIMING_FIXED = 0,
+  // An event plays at the start of the block that drains it; the events
+  // carry AUD_EVENT_FLAG_LIVE.
+  AUD_SOURCE_TIMING_IMMEDIATE = 1,
+};
+
+typedef struct AudEventSourceConfig {
+  uint32_t struct_size;
+  uint32_t capacity;   // events; rounded up to a power of two; 0: 4096
+  int32_t node;        // target node handle, committed
+  uint32_t port;       // target event inlet
+  uint32_t timing;     // AUD_SOURCE_TIMING_*
+  uint32_t reserved;
+  int64_t latency_ns;  // C of AUD_SOURCE_TIMING_FIXED
+} AudEventSourceConfig;
+
+// The histograms of AudEventSourceStats: the delivery delay in bins of
+// 50 us up to 25 ms, the input to output time in bins of 0.25 ms up to
+// 256 ms; the last bin of each counts what lies beyond.
+#define AUD_SOURCE_DELAY_BIN_NS 50000
+#define AUD_SOURCE_DELAY_BINS 500
+#define AUD_SOURCE_LATENCY_BIN_NS 250000
+#define AUD_SOURCE_LATENCY_BINS 1024
+
+// The counters of a source: relaxed atomics, each exact on its own.
+typedef struct AudEventSourceStats {
+  uint32_t struct_size;
+  uint32_t attached;  // a producer holds the token
+  uint64_t pushed;    // packets the queue took
+  uint64_t rejected;  // the queue was full, or the packet malformed
+  uint64_t delivered;
+  uint64_t late;  // played at the block start after their time
+  int64_t max_late_ns;
+  // Note ons a release dropped, packets for a target that takes no events.
+  uint64_t dropped;
+  uint64_t reordered;  // timestamps raised to the predecessor's
+  uint64_t releases;   // releases the realtime thread carried out
+  // Push time minus timestamp, taken on the producer thread.
+  int64_t max_delay_ns;
+  uint32_t last_word0;  // of the last delivered packet (activity)
+  uint32_t reserved;
+  int64_t last_timestamp_ns;  // its timestamp
+  uint64_t delay_histogram[AUD_SOURCE_DELAY_BINS + 1];
+  // The output time of the event's frame minus its timestamp.
+  uint64_t latency_histogram[AUD_SOURCE_LATENCY_BINS + 1];
+} AudEventSourceStats;
+
+typedef struct AudEventSource AudEventSource;
+
+// [control] A source for a committed target; NULL and *result otherwise:
+// AUD_ERROR_NOT_FOUND, AUD_ERROR_RETIRED, AUD_ERROR_STATE for a node that
+// has not been committed, AUD_ERROR_INVALID_ARGUMENT for the graph itself,
+// a port beyond the node's event inputs or an unknown timing,
+// AUD_ERROR_CAPACITY beyond AUD_GRAPH_MAX_EVENT_SOURCES.
+AUD_EXPORT AudEventSource* aud_graph_create_event_source(
+    AudGraph* graph, const AudEventSourceConfig* config, int32_t* result);
+
+// [control] Retires the source; the graph frees it once the audio thread
+// let go (see above). Its producer must have detached.
+AUD_EXPORT int32_t aud_graph_destroy_event_source(AudGraph* graph,
+                                                  AudEventSource* source);
+
+// [control] Sets C; takes effect at the next block.
+AUD_EXPORT int32_t aud_event_source_set_latency(AudEventSource* source,
+                                                int64_t latency_ns);
+
+// [control] A producer attaches before its first push and detaches after
+// its last one (CAS 0 -> token; AUD_GRAPH_ERROR_BUSY while another is
+// attached, AUD_ERROR_INVALID_ARGUMENT for the token 0 or a detach with
+// another token).
+AUD_EXPORT int32_t aud_event_source_attach(AudEventSource* source,
+                                           uint64_t token);
+AUD_EXPORT int32_t aud_event_source_detach(AudEventSource* source,
+                                           uint64_t token);
+
+// [producer: one thread at a time, never the audio thread] One UMP packet
+// of 1 to 4 words with its timestamp in host ns (0: now). AUD_OK;
+// AUD_ERROR_QUEUE_FULL (a note off that does not fit raises release);
+// AUD_ERROR_INVALID_ARGUMENT for a malformed packet - NULL words, or a
+// count other than the type's.
+AUD_EXPORT int32_t aud_event_source_push(AudEventSource* source,
+                                         const uint32_t* words,
+                                         uint32_t count, int64_t host_time_ns);
+
+// [producer] Events waiting; approximate from other threads.
+AUD_EXPORT uint32_t aud_event_source_size(const AudEventSource* source);
+AUD_EXPORT uint32_t aud_event_source_capacity(const AudEventSource* source);
+
+// [any thread] Raises release: before the next drain the queue empties
+// (note offs and controllers at offset 0, note ons dropped and counted)
+// and the target's notes close (note offs, then CC64 = 0 and CC66 = 0 on
+// every group and channel the source delivered a sustain or soft pedal
+// on). A queue that does not fit into one block's event table empties
+// over the blocks it takes; the notes close once it is empty. Idempotent.
+AUD_EXPORT void aud_event_source_release(AudEventSource* source);
+
+// [any thread] Copies the counters.
+AUD_EXPORT int32_t aud_event_source_stats(const AudEventSource* source,
+                                          AudEventSourceStats* stats);
+
+// The function pointer types a bridge that includes this header without
+// linking the graph hands to its adapters (ticket 26).
+typedef int32_t (*AudEventSourcePushFunction)(AudEventSource*,
+                                              const uint32_t*, uint32_t,
+                                              int64_t);
+typedef void (*AudEventSourceReleaseFunction)(AudEventSource*);
+typedef uint32_t (*AudEventSourceSizeFunction)(const AudEventSource*);
+
+// ............................................................................
+// The timing of the engine (time-001, midi-003)
+
+// Flags of AudGraphTiming.
+enum {
+  AUD_TIMING_VALID = 1 << 0,    // a block has rendered
+  AUD_TIMING_OFFLINE = 1 << 1,  // the last block rendered offline
+};
+
+// The timing as the last block saw it, for the control side: what a
+// bridge needs to choose C = P + L + m of midi-003.
+typedef struct AudGraphTiming {
+  uint32_t struct_size;
+  uint32_t flags;  // AUD_TIMING_*
+  double sample_rate;
+  int64_t sample_position;  // the first frame of the last block
+  int64_t host_time_ns;     // its fitted output time
+  uint32_t frames;          // of the last block
+  // The output latency the stream reported with the last block.
+  uint32_t output_latency_frames;
+  // P: the longest time between the starts of two renders since the last
+  // reset of the time filter, measured on the realtime thread; offline the
+  // longest block since the reset. A stream may split one callback into
+  // several renders; the longest gap is what counts.
+  int64_t max_period_ns;
+  int64_t nominal_period_ns;  // the prepared largest block over the rate
+  uint32_t time_filter_resets;
+  uint32_t reserved;
+} AudGraphTiming;
+
+// [any thread] A consistent snapshot; AUD_ERROR_STATE before a block ran.
+AUD_EXPORT int32_t aud_graph_timing(const AudGraph* graph,
+                                    AudGraphTiming* timing);
 
 // ............................................................................
 // Rendering

@@ -36,6 +36,7 @@ void main(List<String> args) async {
       sources: [
         'src/aud_graph.cpp',
         'src/aud_graph_compiler.cpp',
+        'src/aud_graph_event_source.cpp',
         'src/aud_graph_host.cpp',
         'src/aud_graph_nodes.cpp',
         'src/aud_graph_offline.cpp',

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Add event sources for native producers and the engine's timing
+
+- Event sources (interop-003): one lock-free queue per producer, drained after the scheduled events with peek and pop, the per-block budget and the note tracking
+- Timing policies fixed and immediate (midi-003); release flushes a source and closes its target's notes with sustain and soft pedal off
+- aud_graph_timing: the fitted output time, the reported output latency and the longest period for the control side
+- Retiring nodes keep their event routes until they are done, so their note offs arrive
+- Dart: AudEventSource, AudGraphTiming, AudSourceDoneNotification; native, stress and Dart tests; the example resolves core through its tag
+
 ## 0.5.0 - 2026-10-12
 
 ### Added
@@ -68,6 +80,7 @@
 
 - The error tests check the type and the message; AudCacheUsage and AudNodeMessage get their landmarks
 
+
 ## 0.4.0 - 2026-10-09
 
 ### Changed
@@ -102,6 +115,7 @@
 - Refuse descriptors without parameter or string ids
 
 - Add AudHost and the asset table of the graph document on the Dart side
+
 
 ## 0.2.0 - 2026-10-08
 
