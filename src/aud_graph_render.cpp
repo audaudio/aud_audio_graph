@@ -124,7 +124,9 @@ void Scheduler::release(uint32_t index) {
   count -= 1;
 }
 
-uint32_t Scheduler::cancel(const NodeInstance* instance, uint32_t id) {
+uint32_t Scheduler::cancel(const NodeInstance* instance, uint32_t id,
+                           void (*removed)(void* user, const AudEvent& event),
+                           void* user) {
   uint32_t cancelled = 0;
   for (EventHeap& heap : heaps) {
     size_t kept = 0;
@@ -134,6 +136,7 @@ uint32_t Scheduler::cancel(const NodeInstance* instance, uint32_t id) {
       const bool matches = (instance == nullptr || event.instance == instance) &&
                            (id == 0 || event.id == id);
       if (matches) {
+        if (removed != nullptr) removed(user, event.event);
         release(index);
         cancelled += 1;
       } else {
@@ -212,6 +215,7 @@ bool addBlockEvent(AudGraph* graph, uint32_t node, const AudEvent& event,
   if (graph->numBlockEvents >= graph->blockEvents.size()) {
     graph->diagnostics.overflow += 1;
     graph->eventsDropped.fetch_add(1, std::memory_order_relaxed);
+    releaseMessage(graph, event);
     return false;
   }
   BlockEvent& entry = graph->blockEvents[graph->numBlockEvents++];
@@ -334,6 +338,11 @@ void closeNotes(AudGraph* graph, NodeInstance* instance, uint32_t node) {
 // ............................................................................
 // Adoption (graph-003)
 
+// The callback of Scheduler::cancel: a removed message frees its slot.
+void releaseRemoved(void* user, const AudEvent& event) {
+  releaseMessage(static_cast<AudGraph*>(user), event);
+}
+
 // Gives places of the scheduler back to the control thread (ticket 20).
 void releaseScheduled(AudGraph* graph, uint32_t count) {
   if (count > 0) {
@@ -371,7 +380,8 @@ void adoptPending(AudGraph* graph) {
         instance->tail > 0 ? std::min(instance->tail, graph->maxTailFrames)
                            : graph->fadeFrames;
     closeNotes(graph, instance, instance->rtIndex);
-    const uint32_t purged = graph->scheduler.cancel(instance, 0);
+    const uint32_t purged =
+        graph->scheduler.cancel(instance, 0, releaseRemoved, graph);
     releaseScheduled(graph, purged);
     graph->diagnostics.retired += purged;
     graph->eventsDropped.fetch_add(purged, std::memory_order_relaxed);
@@ -834,6 +844,7 @@ void dropLate(AudGraph* graph, NodeInstance* instance, const AudEvent& event,
   graph->diagnostics.late += 1;
   if (graph->config.flags & AUD_GRAPH_DROP_LATE_EVENTS) {
     graph->eventsDropped.fetch_add(1, std::memory_order_relaxed);
+    releaseMessage(graph, event);
     return;
   }
   graph->eventsLate.fetch_add(1, std::memory_order_relaxed);
@@ -847,6 +858,7 @@ bool deliverEvent(AudGraph* graph, const Command& command) {
   if (instance != nullptr && (graph->current == nullptr || !acceptsEvents(instance))) {
     graph->diagnostics.retired += 1;
     graph->eventsDropped.fetch_add(1, std::memory_order_relaxed);
+    releaseMessage(graph, command.event);
     return false;
   }
   if (command.at.domain == AUD_TIME_IMMEDIATE) {
@@ -866,6 +878,7 @@ bool deliverEvent(AudGraph* graph, const Command& command) {
   }
   if (result == AUD_ERROR_INVALID_ARGUMENT) {
     graph->eventsDropped.fetch_add(1, std::memory_order_relaxed);
+    releaseMessage(graph, command.event);
     return false;
   }
   ScheduledEvent scheduled;
@@ -880,6 +893,7 @@ bool deliverEvent(AudGraph* graph, const Command& command) {
   if (!graph->scheduler.push(scheduled)) {
     graph->diagnostics.schedulerFull += 1;
     graph->eventsDropped.fetch_add(1, std::memory_order_relaxed);
+    releaseMessage(graph, command.event);
     return false;
   }
   return true;
@@ -905,6 +919,7 @@ void popScheduled(AudGraph* graph) {
               : 1;
       if (graph->numBlockEvents + needed > graph->blockEvents.size()) break;
       if (instance != nullptr && (graph->current == nullptr || !acceptsEvents(instance))) {
+        releaseMessage(graph, event.event);
         scheduler.pop(domain);
         scheduler.release(index);
         releaseScheduled(graph, 1);
@@ -927,6 +942,7 @@ void popScheduled(AudGraph* graph) {
         dropLate(graph, copy.instance, copy.event, copy.sequence);
       } else {
         graph->eventsDropped.fetch_add(1, std::memory_order_relaxed);
+        releaseMessage(graph, copy.event);
       }
     }
   }
@@ -1036,6 +1052,7 @@ void deliverDeferred(AudGraph* graph) {
     if (graph->current == nullptr || !acceptsEvents(deferred.instance)) {
       graph->diagnostics.retired += 1;
       graph->eventsDropped.fetch_add(1, std::memory_order_relaxed);
+      releaseMessage(graph, deferred.event);
       continue;
     }
     addBlockEvent(graph, deferred.instance->rtIndex, deferred.event, 0,
@@ -1049,7 +1066,8 @@ void deliverPopped(AudGraph* graph) {
     const Command& command = graph->popped[i];
     if (command.kind == CommandKind::cancel) {
       releaseScheduled(graph,
-                       graph->scheduler.cancel(command.instance, command.id));
+                       graph->scheduler.cancel(command.instance, command.id,
+                                               releaseRemoved, graph));
     } else if (!deliverEvent(graph, command) && command.reserved) {
       releaseScheduled(graph, 1);
     }
@@ -1283,6 +1301,7 @@ void runWrapped(AudGraph* graph, NodeInstance* instance,
         w.events[w.numEvents++] = event;
       } else {
         w.dropped += 1;
+        releaseMessage(graph, context.events[nextEvent]);
       }
       nextEvent += 1;
     }
@@ -1297,10 +1316,10 @@ void runWrapped(AudGraph* graph, NodeInstance* instance,
     inner.num_events = w.numEvents;
     inner.events = w.events.data();
     instance->descriptor->vtable->process(instance->instance, &inner);
+    for (uint32_t i = 0; i < w.numEvents; ++i) releaseMessage(graph, w.events[i]);
     w.fill = 0;
     w.numEvents = 0;
   }
-  (void)graph;
 }
 
 // Keeps an event of a parked node for the next block; 0 when the buffer
@@ -1310,6 +1329,7 @@ uint32_t postpone(AudGraph* graph, NodeInstance* instance,
   if (graph->numDeferred >= graph->deferred.size()) {
     graph->diagnostics.overflow += 1;
     graph->eventsDropped.fetch_add(1, std::memory_order_relaxed);
+    releaseMessage(graph, event);
     return 0;
   }
   DeferredEvent& deferred = graph->deferred[graph->numDeferred++];
@@ -1350,7 +1370,15 @@ void skipParked(AudGraph* graph, const Job& job, uint32_t frames) {
 void runNode(AudGraph* graph, const Job& job, uint32_t frames) {
   Program* program = graph->current;
   ProgramNode& node = program->nodes[job.node];
-  if (node.skip) return;
+  if (node.skip) {
+    // No message reaches a node that is done; should one be in the table,
+    // its slot goes back.
+    const NodeRange& range = graph->nodeRanges[job.node];
+    for (uint32_t k = range.begin; k < range.end; ++k) {
+      releaseMessage(graph, graph->blockEvents[k].event);
+    }
+    return;
+  }
   NodeInstance* instance = node.instance;
   if (instance->parked.load(std::memory_order_seq_cst)) {
     skipParked(graph, job, frames);
@@ -1389,6 +1417,9 @@ void runNode(AudGraph* graph, const Job& job, uint32_t frames) {
     runWrapped(graph, instance, context);
   } else {
     instance->descriptor->vtable->process(instance->instance, &context);
+    for (uint32_t i = 0; i < numEvents; ++i) {
+      releaseMessage(graph, graph->nodeEvents[i]);
+    }
   }
   graph->currentNode = UINT32_MAX;
   graph->eventsDelivered.fetch_add(numEvents, std::memory_order_relaxed);
@@ -1517,6 +1548,9 @@ void finishRetirement(AudGraph* graph, uint32_t frames) {
     if (instance->tailRemaining > 0 || popped < instance->retireSequence) continue;
     instance->rtDone = true;
     node.skip = true;
+    // The fade can end before the wrapper fills its block: the messages
+    // it holds never reach the node, their slots come back now.
+    releaseWrapped(graph, instance);
     for (Edge* edge : program->edges) {
       if (touches(edge, instance)) {
         edge->inactive.store(true, std::memory_order_release);
@@ -1542,6 +1576,11 @@ void resetScratch(AudGraph* graph) {
   graph->diagnostics = BlockDiagnostics{};
   graph->blockNotified = false;
   graph->pendingSeek = false;
+  graph->blockMessages = 0;
+  graph->blockMessagesDropped = 0;
+  graph->blockMessagesDroppedNode = 0;
+  graph->numNodeReports = 0;
+  graph->nodeReportsMerged = 0;
 }
 
 // Clears the event ranges of the nodes of the adopted program. Only the
@@ -1564,6 +1603,19 @@ void reportDiagnostics(AudGraph* graph) {
   notifyDiagnostic(graph, AUD_ERROR_CAPACITY, d.schedulerFull + d.trackerFull,
                    d.trackerFull > 0 ? d.trackerFullNode : 0);
   notifyDiagnostic(graph, AUD_ERROR_UNSUPPORTED, d.transportRefused);
+  // What the nodes reported (ticket 25): once per node and code.
+  for (uint32_t i = 0; i < graph->numNodeReports; ++i) {
+    const NodeReport& report = graph->nodeReports[i];
+    notifyDiagnostic(graph, report.code, report.count, report.node);
+  }
+  notifyDiagnostic(graph, AUD_ERROR_QUEUE_FULL, graph->nodeReportsMerged);
+  notifyDiagnostic(graph, AUD_ERROR_QUEUE_FULL, graph->blockMessagesDropped,
+                   graph->blockMessagesDroppedNode);
+  if (graph->blockMessages > 0) {
+    AudGraphNotification n = makeNotification(graph, AUD_NOTIFY_MESSAGE);
+    n.count = graph->blockMessages;
+    notify(graph, n);
+  }
 }
 
 float peakOf(const AudRenderRequest* request) {
@@ -1669,6 +1721,9 @@ void emitEvent(AudGraph* graph, void* instance, const AudEvent* event) {
   const uint32_t current = graph->currentNode;
   const Program* program = graph->current;
   if (current == UINT32_MAX || program == nullptr) return;
+  // Only the engine creates message events; a node answers through
+  // emit_message.
+  if (event->type == AUD_EVENT_MESSAGE) return;
   const ProgramNode& node = program->nodes[current];
   if (node.instance->instance != instance) return;
   const uint32_t frames = graph->streamTime.frames;
@@ -1718,6 +1773,155 @@ void emitEvent(AudGraph* graph, void* instance, const AudEvent* event) {
   }
 }
 
+namespace {
+
+// Appends `size` bytes to a message record; false when they do not fit.
+// The check takes no sum, which could wrap on a 32-bit target: a blob of
+// almost 4 GiB would pass it.
+bool appendBytes(AudGraphMessage& record, const void* bytes, size_t size) {
+  if (size > sizeof(record.data) - record.size) return false;
+  std::memcpy(record.data + record.size, bytes, size);
+  record.size += static_cast<uint32_t>(size);
+  return true;
+}
+
+// Packs a message into a record in the layout of AudGraphMessage; false
+// for a message beyond the limits of osc-002 - more than
+// AUD_GRAPH_MAX_MESSAGE_ARGS arguments or AUD_GRAPH_MESSAGE_BYTES - or with
+// an argument of an unknown type.
+bool packMessage(AudGraphMessage& record, const AudMessage& message) {
+  if (message.num_args > kMaxMessageArgs) return false;
+  const char* path = message.path == nullptr ? "" : message.path;
+  if (!appendBytes(record, path, std::strlen(path) + 1)) return false;
+  for (uint32_t i = 0; i < message.num_args; ++i) {
+    const AudMessageArg& arg = message.args[i];
+    const uint8_t tag = static_cast<uint8_t>(arg.type);
+    if (!appendBytes(record, &tag, 1)) return false;
+    bool fits = true;
+    switch (arg.type) {
+      case AUD_ARG_INT32:
+        fits = appendBytes(record, &arg.value.i, 4);
+        break;
+      case AUD_ARG_FLOAT:
+        fits = appendBytes(record, &arg.value.f, 4);
+        break;
+      case AUD_ARG_INT64:
+        fits = appendBytes(record, &arg.value.h, 8);
+        break;
+      case AUD_ARG_DOUBLE:
+        fits = appendBytes(record, &arg.value.d, 8);
+        break;
+      case AUD_ARG_STRING: {
+        const char* s = arg.value.s == nullptr ? "" : arg.value.s;
+        fits = appendBytes(record, s, std::strlen(s) + 1);
+        break;
+      }
+      case AUD_ARG_BLOB: {
+        // A blob without bytes goes as an empty one.
+        const uint32_t size = arg.value.b == nullptr ? 0 : arg.size;
+        fits = appendBytes(record, &size, 4) &&
+               (size == 0 || appendBytes(record, arg.value.b, size));
+        break;
+      }
+      case AUD_ARG_TRUE:
+      case AUD_ARG_FALSE:
+      case AUD_ARG_NIL:
+      case AUD_ARG_IMPULSE:
+        break;
+      default:
+        return false;
+    }
+    if (!fits) return false;
+  }
+  record.num_args = message.num_args;
+  return true;
+}
+
+// The handle of the node whose process call runs and owns `instance`, 0
+// for a call outside of one.
+int32_t runningHandle(const AudGraph* graph, const void* instance) {
+  const uint32_t current = graph->currentNode;
+  const Program* program = graph->current;
+  if (current == UINT32_MAX || program == nullptr) return 0;
+  const NodeInstance* node = program->nodes[current].instance;
+  return node->instance == instance ? node->handle : 0;
+}
+
+}  // namespace
+
+// [realtime] A node sends a message to the control thread (ticket 25): the
+// reply queue takes a copy; a full queue or a message beyond the limits of
+// a record drops it and counts.
+void emitMessage(AudGraph* graph, void* instance, const AudMessage* message) {
+  const int32_t handle = runningHandle(graph, instance);
+  if (handle == 0 || message == nullptr ||
+      message->struct_size < sizeof(AudMessage) ||
+      (message->num_args > 0 && message->args == nullptr)) {
+    return;
+  }
+  AudGraphMessage record;
+  record.struct_size = sizeof(AudGraphMessage);
+  record.node = handle;
+  record.sample_position = graph->streamTime.sample_position;
+  record.num_args = 0;
+  record.size = 0;
+  if (!packMessage(record, *message) || !graph->replies->push(record)) {
+    graph->blockMessagesDropped += 1;
+    graph->blockMessagesDroppedNode = handle;
+    graph->messagesDropped.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  graph->blockMessages += 1;
+}
+
+// [realtime] A node reports a diagnostic; the block sums them per node and
+// code.
+void reportNode(AudGraph* graph, void* instance, int32_t code, uint32_t count) {
+  const int32_t handle = runningHandle(graph, instance);
+  if (handle == 0 || count == 0) return;
+  for (uint32_t i = 0; i < graph->numNodeReports; ++i) {
+    NodeReport& report = graph->nodeReports[i];
+    if (report.node == handle && report.code == code) {
+      report.count += count;
+      return;
+    }
+  }
+  if (graph->numNodeReports == kMaxNodeReports) {
+    graph->nodeReportsMerged += count;
+    return;
+  }
+  graph->nodeReports[graph->numNodeReports++] = NodeReport{handle, code, count};
+}
+
+void releaseMessage(AudGraph* graph, const AudEvent& event) {
+  if (event.type != AUD_EVENT_MESSAGE) return;
+  const uint32_t slot = event.words[2];
+  if (slot < graph->numMessageSlots) {
+    graph->messageSlots[slot].busy.store(false, std::memory_order_release);
+  }
+}
+
+// The wrapper holds the events of the block it fills until the block is
+// full; a node that is done, prepared again or destroyed never gets them.
+void releaseWrapped(AudGraph* graph, NodeInstance* instance) {
+  FixedBlockWrapper* wrapper = instance->wrapper.get();
+  if (wrapper == nullptr) return;
+  for (uint32_t i = 0; i < wrapper->numEvents; ++i) {
+    releaseMessage(graph, wrapper->events[i]);
+  }
+  // A second call frees nothing: a slot may hold another message by then.
+  wrapper->numEvents = 0;
+  wrapper->fill = 0;
+}
+
+// The flag keeps the semaphore at one post per wake; the control thread
+// clears it before it takes the notifications.
+void wakeListener(AudGraph* graph) {
+  if (!graph->wakePending.exchange(true, std::memory_order_acq_rel)) {
+    graph->wake.post();
+  }
+}
+
 // Reports what the watchdog caught in the block (ticket 20).
 void reportWatchdog(AudGraph* graph) {
   const uint32_t hits = watchdogBlockHits();
@@ -1756,6 +1960,8 @@ int32_t renderBlock(AudGraph* graph,
   popScheduled(graph);
   for (uint32_t i = 0; i < request->num_events; ++i) {
     const AudEvent& event = request->events[i];
+    // Only the engine creates message events (osc-002).
+    if (event.type == AUD_EVENT_MESSAGE) continue;
     routeGraphEvent(graph, event, std::min(event.sample_offset, frames - 1), 0);
   }
   sortBlockEvents(graph);
@@ -1768,6 +1974,10 @@ int32_t renderBlock(AudGraph* graph,
     finishRetirement(graph, frames);
   } else {
     clearOutputs(request);
+    // The events of the block reach no node; their message slots go back.
+    for (uint32_t i = 0; i < graph->numBlockEvents; ++i) {
+      releaseMessage(graph, graph->blockEvents[i].event);
+    }
   }
   publishTransport(graph, frames);
   const float peak = peakOf(request);
@@ -1797,10 +2007,7 @@ int32_t renderBlock(AudGraph* graph,
     n.value = elapsed;
     notify(graph, n);
   }
-  if (graph->blockNotified &&
-      !graph->wakePending.exchange(true, std::memory_order_acq_rel)) {
-    graph->wake.post();
-  }
+  if (graph->blockNotified) wakeListener(graph);
   return AUD_OK;
 }
 

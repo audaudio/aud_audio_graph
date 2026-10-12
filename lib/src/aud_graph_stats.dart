@@ -28,6 +28,7 @@ class AudGraphStats {
     required this.timeFilterResets,
     required this.outputPeak,
     this.realtimeViolations = 0,
+    this.messagesDropped = 0,
   });
 
   // ...........................................................................
@@ -81,8 +82,14 @@ class AudGraphStats {
   final double outputPeak;
 
   /// What the debug watchdog caught on the realtime thread: allocations,
-  /// frees and log calls (ticket 20); 0 without the watchdog.
+  /// frees and log calls (ticket 20), control calls of the host api
+  /// (ticket 25); 0 without the watchdog.
   final int realtimeViolations;
+
+  /// The messages of nodes the graph dropped (ticket 25): the reply queue
+  /// was full, or a message was beyond the 16 arguments and 1000 bytes of
+  /// osc-002.
+  final int messagesDropped;
 
   /// The mean block render in nanoseconds.
   double get renderTimeMeanNs =>
@@ -108,6 +115,7 @@ class AudGraphStats {
     'timeFilterResets': timeFilterResets,
     'outputPeak': outputPeak,
     'realtimeViolations': realtimeViolations,
+    'messagesDropped': messagesDropped,
   };
 
   @override

@@ -70,6 +70,8 @@ enum {
   AUD_GRAPH_VIOLATION_ALLOC = 1 << 2,   // AudHostApi.alloc
   AUD_GRAPH_VIOLATION_FREE = 1 << 3,    // AudHostApi.free
   AUD_GRAPH_VIOLATION_LOG = 1 << 4,     // AudHostApi.log
+  // A control or offline function of AudHostApi, e.g. begin_load.
+  AUD_GRAPH_VIOLATION_CONTROL = 1 << 5,
 };
 
 // The lifecycle states of a graph (lifecycle-001).
@@ -127,6 +129,9 @@ typedef struct AudGraphConfig {
   uint32_t fade_frames;             // 0 = 5 ms at the sample rate
   uint32_t max_tail_frames;         // 0 = 10 s at the sample rate
   int64_t lookahead_ns;             // 0 = 10 s
+  uint32_t message_capacity;  // 0 = 256 messages waiting for their node
+  uint32_t reply_capacity;    // 0 = 256 messages of nodes for the control
+                              // thread
 } AudGraphConfig;
 
 // How a node instance is created: its bus formats. NULL or zero bus counts
@@ -153,16 +158,22 @@ enum {
   // block, for `node` (0 for the graph): AUD_ERROR_LATE (late events
   // played or dropped), AUD_ERROR_RETIRED (events of a retired node
   // dropped), AUD_ERROR_QUEUE_FULL (block, notification or host event
-  // output capacity exceeded, entries dropped), AUD_ERROR_CAPACITY (the
-  // note tracker of `node` - the last one in the block - refused note ons,
-  // which are dropped so that no note stays open), AUD_ERROR_STATE (`node`
-  // is parked for a state call: its events wait for the block after the
-  // call, `count` of them when the park began),
-  // AUD_ERROR_OVERLOAD (the block took longer than it lasts; `value`
-  // holds the render time in ns), AUD_ERROR_UNSUPPORTED (the transport
-  // refused a request), AUD_GRAPH_ERROR_REALTIME_VIOLATION (the watchdog
-  // caught `count` violations; `value` holds the AUD_GRAPH_VIOLATION_*
-  // kinds).
+  // output capacity exceeded, entries dropped; for a `node`, its messages
+  // the graph dropped - the reply queue was full or a message was beyond
+  // its limits; for node 0 also the reports of nodes that found no place
+  // of their own in the block, counted together),
+  // AUD_ERROR_CAPACITY (the note tracker of `node` - the last one in the
+  // block - refused note ons, which are dropped so that no note stays
+  // open), AUD_ERROR_STATE (`node` is parked for a state call: its events
+  // wait for the block after the call, `count` of them when the park
+  // began), AUD_ERROR_OVERLOAD (the block took longer than it lasts;
+  // `value` holds the render time in ns), AUD_ERROR_UNSUPPORTED (the
+  // transport refused a request), AUD_GRAPH_ERROR_REALTIME_VIOLATION (the
+  // watchdog caught `count` violations; `value` holds the
+  // AUD_GRAPH_VIOLATION_* kinds). A node reports codes of its own through
+  // AudHostApi.report (ticket 25), summed per node and code: e.g.
+  // AUD_ERROR_UNDERFLOW, a stream that fell behind, or
+  // AUD_ERROR_UNSUPPORTED, a message it cannot handle on the audio thread.
   AUD_NOTIFY_DIAGNOSTIC = 4,
   // `node` emitted `event` into the graph's event input.
   AUD_NOTIFY_EVENT = 5,
@@ -171,9 +182,20 @@ enum {
   AUD_NOTIFY_TRANSPORT = 6,
   // The time filter reset `count` times.
   AUD_NOTIFY_TIME_RESET = 7,
+  // A load of `node` began, progressed or ended (ticket 25): `value` the
+  // load id, `code` AUD_PENDING while it runs and its result at the end,
+  // `number` the progress from 0 to 1. aud_graph_load_info says more. A
+  // progress replaces the progress of the same load that still waits; while
+  // `notification_capacity` notifications of loads wait, a new progress is
+  // dropped and counted in `notifications_dropped` - a begin or an end never.
+  AUD_NOTIFY_LOAD = 8,
+  // Nodes sent `count` messages in the block (AudHostApi.emit_message);
+  // aud_graph_take_messages takes them.
+  AUD_NOTIFY_MESSAGE = 9,
 };
 
-// A notification of the realtime thread.
+// A notification for the control thread: of the realtime thread, or of a
+// load, which the control thread and the workers report (ticket 25).
 typedef struct AudGraphNotification {
   uint32_t struct_size;
   uint32_t type;  // AUD_NOTIFY_*
@@ -209,6 +231,9 @@ typedef struct AudGraphStats {
   float output_peak;  // the largest absolute output sample since the reset
   uint32_t reserved2;
   uint64_t realtime_violations;  // what the watchdog caught since the reset
+  // Messages of nodes dropped: the reply queue was full, or a message was
+  // beyond AUD_GRAPH_MESSAGE_BYTES or AUD_GRAPH_MAX_MESSAGE_ARGS.
+  uint64_t messages_dropped;
 } AudGraphStats;
 
 // The transport as the realtime thread last saw it.
@@ -274,7 +299,9 @@ typedef void (*AudGraphListener)(void* user);
 AUD_EXPORT AudGraph* aud_graph_create(const AudGraphConfig* config);
 
 // [control] Destroys the graph and every instance. The stream must have
-// stopped calling aud_graph_render.
+// stopped calling aud_graph_render. The loads the nodes leave running end
+// as cancelled (see Loads); the call returns once the tasks the nodes
+// posted have run - not those of other graphs (ticket 25).
 AUD_EXPORT void aud_graph_destroy(AudGraph* graph);
 
 // [control] Prepares every instance for a sample rate and a largest block
@@ -323,7 +350,8 @@ AUD_EXPORT const AudNodeDescriptor* aud_graph_node_type_by_id(
 // [control] Creates and prepares an instance of a registered type; returns
 // its handle (> 0) or an error code: AUD_ERROR_UNKNOWN_TYPE,
 // AUD_ERROR_FORMAT for channels outside the descriptor's range,
-// AUD_ERROR_CAPACITY when max_nodes is reached. The instance renders from
+// AUD_ERROR_CAPACITY when max_nodes is reached, the error of a create or
+// prepare that failed - which spends a handle. The instance renders from
 // the next commit on.
 AUD_EXPORT int32_t aud_graph_create_node(AudGraph* graph, const char* type_id,
                                          const AudNodeConfig* config);
@@ -413,7 +441,8 @@ AUD_EXPORT int32_t aud_graph_disconnect_events(AudGraph* graph, int32_t from,
 // [control] Removes a node inside the open transaction: its connections
 // go with it, the instance retires at the commit and is freed once its
 // fade or tail has passed (AUD_NOTIFY_NODE_DONE). A node that never
-// rendered is freed at once.
+// rendered is freed at once. The commit cancels the loads of the node
+// (ticket 25; see Loads).
 AUD_EXPORT int32_t aud_graph_remove_node(AudGraph* graph, int32_t node);
 
 // [control] Compiles the topology and publishes the program; returns the
@@ -454,7 +483,10 @@ AUD_EXPORT int32_t aud_graph_send_event(AudGraph* graph, int32_t node,
 AUD_EXPORT int32_t aud_graph_cancel(AudGraph* graph, int32_t node,
                                     uint32_t id);
 
-// [control] Applies a string setting on the calling thread; may block.
+// [control] Applies a string setting on the calling thread; returns AUD_OK,
+// an error code, or the id (> 0) of a load the node started on a worker
+// (ticket 25; see Loads). A node that loads on the calling thread may
+// block.
 AUD_EXPORT int32_t aud_graph_set_string(AudGraph* graph, int32_t node,
                                         uint32_t key, const char* value);
 
@@ -528,6 +560,146 @@ AUD_EXPORT int32_t aud_graph_get_stats(AudGraph* graph, AudGraphStats* stats);
 
 // [control] Zeroes the counters; the realtime thread keeps counting.
 AUD_EXPORT void aud_graph_reset_stats(AudGraph* graph);
+
+// ............................................................................
+// Loads (lifecycle-002, ticket 25)
+//
+// A node that loads on a worker thread - e.g. the sampler loading an SFZ
+// file named by a string setting - opens a load through
+// AudHostApi.begin_load: aud_graph_set_string returns its id (> 0), the
+// load reports its progress and ends with a result. The graph keeps the
+// loads that run and the last 64 that ended. A load the package begins in
+// the create or the first prepare of aud_graph_create_node belongs to the
+// node being created. The commit that removes a node cancels its loads, and
+// a load its node leaves running when it is destroyed - or when its create
+// or prepare fails - ends as AUD_ERROR_CANCELLED with the message "the node
+// was removed"; an end_load that comes later is ignored.
+
+#define AUD_GRAPH_MAX_TEXT 256
+
+// A load as the graph knows it.
+typedef struct AudLoadInfo {
+  uint32_t struct_size;
+  int32_t id;
+  int32_t node;    // the handle of the node that loads
+  int32_t result;  // AUD_PENDING while it runs, then the result
+  float progress;  // 0 to 1
+  uint32_t cancelled;
+  int64_t start_ns;  // host time of the begin
+  int64_t end_ns;    // host time of the end, 0 while it runs
+  char name[AUD_GRAPH_MAX_TEXT];     // what loads, e.g. the file
+  // Why a load failed, or what a load that ended well could not do.
+  char message[AUD_GRAPH_MAX_TEXT];
+} AudLoadInfo;
+
+// [control] The ids of the loads the graph keeps, the oldest first; returns
+// their number and writes at most `capacity`.
+AUD_EXPORT int32_t aud_graph_loads(AudGraph* graph, int32_t* ids,
+                                   uint32_t capacity);
+
+// [control] A load by its id; AUD_ERROR_NOT_FOUND when the graph keeps it
+// no longer.
+AUD_EXPORT int32_t aud_graph_load_info(AudGraph* graph, int32_t id,
+                                       AudLoadInfo* info);
+
+// [control] Asks a running load to stop; the node ends it with
+// AUD_ERROR_CANCELLED as soon as it looks. AUD_ERROR_NOT_FOUND for a load
+// that ended or is unknown.
+AUD_EXPORT int32_t aud_graph_cancel_load(AudGraph* graph, int32_t id);
+
+// [control] Waits until no load of `node` (0: of any node) runs; AUD_OK, or
+// AUD_PENDING after `timeout_ms` (0 waits as long as it takes). Then the
+// tails of the nodes are read again, so that the output tail counts what
+// the loads changed.
+AUD_EXPORT int32_t aud_graph_wait_loads(AudGraph* graph, int32_t node,
+                                        uint32_t timeout_ms);
+
+// ............................................................................
+// Messages of nodes (osc-002, ticket 25)
+//
+// A node with AUD_NODE_CAP_MESSAGES takes OSC messages: the graph copies a
+// message into a slot of its own and delivers it as an AUD_EVENT_MESSAGE
+// event - queued, scheduled, ordered and budgeted like every event -, the
+// node answers through AudHostApi.emit_message on the audio thread, and the
+// control thread takes the answers here.
+
+// The bytes a message to or from a node may take: its path and its
+// arguments in the layout of AudGraphMessage.
+#define AUD_GRAPH_MESSAGE_BYTES 1000
+
+// The arguments a message to or from a node may carry.
+#define AUD_GRAPH_MAX_MESSAGE_ARGS 16
+
+// A message a node sent. `data` holds the path with its terminator, then
+// per argument its OSC type tag (one byte) and its value in little endian:
+// i and f 4 bytes, h and d 8 bytes, s the text with its terminator, b the
+// size in 4 bytes and the bytes; T, F, N and I carry no value.
+typedef struct AudGraphMessage {
+  uint32_t struct_size;
+  int32_t node;
+  int64_t sample_position;  // the block it was sent in
+  uint32_t num_args;
+  uint32_t size;  // bytes used in `data`
+  uint8_t data[AUD_GRAPH_MESSAGE_BYTES];
+} AudGraphMessage;
+
+// [control, one producer] Sends a message to a node that takes messages,
+// at `at` (NULL: the next block); an `id` above zero lets it be cancelled
+// while it waits (aud_graph_cancel). The graph copies the message:
+// AUD_ERROR_CAPACITY when every slot waits for its node, or the message
+// takes more than AUD_GRAPH_MESSAGE_BYTES or carries more than
+// AUD_GRAPH_MAX_MESSAGE_ARGS arguments; AUD_ERROR_INVALID_ARGUMENT for a
+// path that does not start with a slash or an argument of an unknown type,
+// AUD_ERROR_UNSUPPORTED for a node without messages; the rest as
+// aud_graph_send_event.
+AUD_EXPORT int32_t aud_graph_send_message(AudGraph* graph, int32_t node,
+                                          const AudMessage* message,
+                                          const AudTimestamp* at, uint32_t id);
+
+// [control] Takes the messages nodes sent, at most `capacity`; returns the
+// number taken.
+AUD_EXPORT int32_t aud_graph_take_messages(AudGraph* graph,
+                                           AudGraphMessage* out,
+                                           uint32_t capacity);
+
+// ............................................................................
+// The resources of the process (lifecycle-002, ticket 25)
+//
+// The graphs of a process share two worker threads, which run the tasks of
+// the packages (AudHostApi.post_task), and one sample cache budget for the
+// caches the packages register: when the caches together hold more, the
+// engine asks the largest to free what nobody uses, the least recently
+// used first. The budget belongs to the process because the packages share
+// what they load between graphs.
+
+typedef struct AudCacheUsage {
+  uint32_t struct_size;
+  uint32_t caches;   // registered caches
+  uint64_t budget;   // bytes
+  int64_t bytes;     // the caches hold together
+  uint64_t trims;    // trim calls so far
+  uint64_t trimmed;  // bytes the trims freed so far
+  uint32_t workers;  // worker threads running
+  uint32_t tasks;    // tasks queued or running
+} AudCacheUsage;
+
+// [control] Sets the sample cache budget of the process in bytes (default
+// 256 MB); a smaller budget trims at once, on the calling thread. A budget
+// above INT64_MAX is INT64_MAX: no limit.
+AUD_EXPORT int32_t aud_cache_set_budget(uint64_t bytes);
+
+// [any thread] The sample cache budget of the process in bytes, at most
+// INT64_MAX.
+AUD_EXPORT uint64_t aud_cache_budget(void);
+
+// [any thread] The caches, the budget and the workers.
+AUD_EXPORT int32_t aud_cache_usage(AudCacheUsage* usage);
+
+// [control] Waits until no task of the workers waits or runs - of any
+// graph; AUD_OK, or AUD_PENDING after `timeout_ms` (0 waits as long as it
+// takes). The offline renderer waits like this before its first block and
+// after every block.
+AUD_EXPORT int32_t aud_tasks_wait_idle(uint32_t timeout_ms);
 
 // ............................................................................
 // The headless host (plugin-002, ticket 20)
@@ -728,6 +900,11 @@ AUD_EXPORT int32_t aud_host_set_asset_path(AudHost* host, const char* id,
 // [realtime] Renders one block: aud_graph_render_host on the host's graph.
 AUD_EXPORT int32_t aud_host_render(AudHost* host,
                                    AudHostRenderRequest* request);
+
+// [control] Waits until the loads the document started have ended, e.g.
+// the instruments a sampler loads on a worker (ticket 25): aud_graph_wait_loads
+// on the host's graph. AUD_OK, or AUD_PENDING after `timeout_ms`.
+AUD_EXPORT int32_t aud_host_wait_loads(AudHost* host, uint32_t timeout_ms);
 
 // ............................................................................
 // The debug watchdog (ticket 20)

@@ -50,6 +50,14 @@ type-map:
       lib: core
       c-type: AudParamDescriptor
       dart-type: AudParamDescriptor
+    AudMessage:
+      lib: core
+      c-type: AudMessage
+      dart-type: AudMessage
+    AudMessageArg:
+      lib: core
+      c-type: AudMessageArg
+      dart-type: AudMessageArg
 preamble: |
   // @license
   // Copyright (c) Audanika. All Rights Reserved.

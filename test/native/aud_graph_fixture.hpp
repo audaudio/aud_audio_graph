@@ -149,8 +149,9 @@ inline const AudNodeDescriptor kRecorderDescriptor = {
 };
 
 // aud.test.delay: delays its mono input by 100 frames and reports the
-// latency and a tail of the same length.
+// latency and a tail of the same length, or the tail a test sets.
 inline constexpr uint32_t kTestLatency = 100;
+inline uint32_t g_delayTail = kTestLatency;
 
 struct Delay {
   std::vector<float> line = std::vector<float>(kTestLatency, 0.0f);
@@ -175,7 +176,7 @@ inline void delayProcess(void* instance, const AudProcessContext* context) {
   }
 }
 inline uint32_t delayLatency(void*) { return kTestLatency; }
-inline uint32_t delayTail(void*) { return kTestLatency; }
+inline uint32_t delayTail(void*) { return g_delayTail; }
 
 inline const AudNodeVTable kDelayVTable = {
     sizeof(AudNodeVTable), delayCreate, delayDestroy, delayPrepare, delayReset,
@@ -320,6 +321,7 @@ struct Preset {
   uint32_t flags = 0;  // of the last process call
   std::string file;
   std::string name;
+  std::string order;  // the string keys in the order they were set
   uint32_t calls = 0;
   uint32_t events = 0;  // events seen in process
   bool sounding[128] = {};  // the notes on
@@ -387,10 +389,12 @@ inline int32_t presetSetString(void* instance, uint32_t key, const char* value) 
   Preset* p = presetOf(instance);
   if (key == kPresetKeyFile) {
     p->file = value;
+    p->order += "file,";
     return AUD_OK;
   }
   if (key == kPresetKeyName) {
     p->name = value;
+    p->order += "name,";
     return AUD_OK;
   }
   return AUD_ERROR_INVALID_ARGUMENT;
@@ -633,6 +637,7 @@ struct Fixture {
     g_resets.clear();
     g_resets.reserve(kRecordCapacity);
     g_fixedFrames.clear();
+    g_delayTail = kTestLatency;
     g_fixedFrames.reserve(kRecordCapacity);
     g_params.clear();
     g_params.reserve(kRecordCapacity);

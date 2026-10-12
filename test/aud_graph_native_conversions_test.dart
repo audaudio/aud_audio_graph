@@ -5,6 +5,7 @@
 // found in the LICENSE file in the root of this package.
 
 import 'dart:ffi';
+import 'dart:typed_data';
 
 import 'package:aud_audio_core/aud_audio_core_ffi.dart';
 import 'package:aud_audio_graph/aud_audio_graph_ffi.dart';
@@ -158,8 +159,240 @@ void main() {
       });
     });
 
+    test('a load', () {
+      native.ref
+        ..node = 3
+        ..value = 7
+        ..code = AUD_PENDING
+        ..number = 0.5;
+      final n = parse(bindings.AUD_NOTIFY_LOAD) as AudLoadNotification;
+      expect((n.node, n.load, n.result, n.progress), (3, 7, AUD_PENDING, 0.5));
+      expect(n.isRunning, isTrue);
+      expect(n.toJson(), {
+        'type': 'load',
+        'node': 3,
+        'load': 7,
+        'result': 'AUD_PENDING',
+        'progress': 0.5,
+        'samplePosition': 512,
+      });
+    });
+
+    test('messages of nodes', () {
+      native.ref.count = 2;
+      final n = parse(bindings.AUD_NOTIFY_MESSAGE) as AudMessageNotification;
+      expect(n.count, 2);
+      expect(n.toJson(), {
+        'type': 'message',
+        'count': 2,
+        'samplePosition': 512,
+      });
+    });
+
     test('refuses an unknown type', () {
       expect(() => parse(99), throwsArgumentError);
+    });
+  });
+
+  group('loads, usage and messages (ticket 25)', () {
+    test('AudLoadInfo.toDart() reads a load with its texts', () {
+      final info = calloc<bindings.AudLoadInfo>();
+      info.ref
+        ..id = 4
+        ..node = 2
+        ..result = AUD_ERROR_FAILED
+        ..progress = 0.25
+        ..cancelled = 1
+        ..start_ns = 10
+        ..end_ns = 20;
+      const name = 'piano.sfz';
+      for (var i = 0; i < name.length; i++) {
+        info.ref.name[i] = name.codeUnitAt(i);
+      }
+      info.ref.message[0] = 'x'.codeUnitAt(0);
+      final load = info.ref.toDart();
+      calloc.free(info);
+      expect(
+        load,
+        const AudLoad(
+          id: 4,
+          node: 2,
+          name: 'piano.sfz',
+          result: AUD_ERROR_FAILED,
+          progress: 0.25,
+          message: 'x',
+          cancelled: true,
+          startNs: 10,
+          endNs: 20,
+        ),
+      );
+    });
+
+    test('AudCacheUsage.toDart() reads the resources', () {
+      final usage = calloc<bindings.AudCacheUsage>();
+      usage.ref
+        ..caches = 1
+        ..budget = 100
+        ..bytes = 50
+        ..trims = 2
+        ..trimmed = 30
+        ..workers = 2
+        ..tasks = 3;
+      final read = usage.ref.toDart();
+      calloc.free(usage);
+      expect(
+        read,
+        const AudCacheUsage(
+          caches: 1,
+          budget: 100,
+          bytes: 50,
+          trims: 2,
+          trimmed: 30,
+          workers: 2,
+          tasks: 3,
+        ),
+      );
+    });
+
+    test('a message is written natively and read back from a record', () {
+      final message = AudOscMessage('/region0/volume', [
+        7,
+        1 << 40,
+        0.5,
+        'x',
+        Uint8List.fromList([1, 2]),
+        Uint8List(0),
+        true,
+        false,
+        null,
+        AudImpulse.instance,
+      ]);
+      using((arena) {
+        final written = message.writeNative(arena);
+        expect(written.ref.num_args, 10);
+        expect(written.ref.path.cast<Utf8>().toDartString(), '/region0/volume');
+        final args = written.ref.args;
+        expect(
+          [for (var i = 0; i < 10; i++) String.fromCharCode(args[i].type)],
+          [
+            'i', 'h', 'f', 's', 'b', 'b', 'T', 'F', 'N', 'I', //
+          ],
+        );
+        expect(args[0].value.i, 7);
+        expect(args[1].value.h, 1 << 40);
+        expect(args[2].value.f, 0.5);
+        expect(args[3].value.s.cast<Utf8>().toDartString(), 'x');
+        expect(args[4].size, 2);
+        expect(args[4].value.b.cast<Uint8>()[1], 2);
+
+        // The packed record of the C API, as a node's answer.
+        final record = arena<bindings.AudGraphMessage>();
+        final bytes = BytesBuilder()
+          ..add('/r'.codeUnits)
+          ..addByte(0)
+          ..addByte('i'.codeUnitAt(0))
+          ..add(
+            (ByteData(4)..setInt32(0, -3, Endian.little)).buffer.asUint8List(),
+          )
+          ..addByte('h'.codeUnitAt(0))
+          ..add(
+            (ByteData(
+              8,
+            )..setInt64(0, 1 << 40, Endian.little)).buffer.asUint8List(),
+          )
+          ..addByte('f'.codeUnitAt(0))
+          ..add(
+            (ByteData(
+              4,
+            )..setFloat32(0, 0.25, Endian.little)).buffer.asUint8List(),
+          )
+          ..addByte('d'.codeUnitAt(0))
+          ..add(
+            (ByteData(
+              8,
+            )..setFloat64(0, 0.125, Endian.little)).buffer.asUint8List(),
+          )
+          ..addByte('s'.codeUnitAt(0))
+          ..add('label'.codeUnits)
+          ..addByte(0)
+          ..addByte('b'.codeUnitAt(0))
+          ..add(
+            (ByteData(4)..setUint32(0, 2, Endian.little)).buffer.asUint8List(),
+          )
+          ..add([9, 8])
+          ..addByte('T'.codeUnitAt(0))
+          ..addByte('F'.codeUnitAt(0))
+          ..addByte('N'.codeUnitAt(0))
+          ..addByte('I'.codeUnitAt(0));
+        final packed = bytes.toBytes();
+        for (var i = 0; i < packed.length; i++) {
+          record.ref.data[i] = packed[i];
+        }
+        record.ref
+          ..node = 5
+          ..sample_position = 256
+          ..num_args = 10
+          ..size = packed.length;
+        final read = record.ref.toDart();
+        expect(read.node, 5);
+        expect(read.samplePosition, 256);
+        expect(read.path, '/r');
+        expect(read.arguments.sublist(0, 6), [
+          -3,
+          1 << 40,
+          0.25,
+          0.125,
+          'label',
+          Uint8List.fromList([9, 8]),
+        ]);
+        expect(read.arguments.sublist(6), [
+          true,
+          false,
+          null,
+          AudImpulse.instance,
+        ]);
+      });
+    });
+
+    test('a timetag is no argument of a node message', () {
+      using((arena) {
+        expect(
+          () =>
+              AudOscMessage('/x', [AudOscTimetag.immediate]).writeNative(arena),
+          throwsA(
+            isA<ArgumentError>().having(
+              (e) => e.message,
+              'message',
+              'Not an argument of a node message',
+            ),
+          ),
+        );
+      });
+    });
+  });
+
+  group('Duration.timeoutMs', () {
+    const cases = [
+      (Duration.zero, 0),
+      (Duration(microseconds: 100), 1),
+      (Duration(milliseconds: 1), 1),
+      (Duration(microseconds: 1001), 2),
+      (Duration(seconds: 2), 2000),
+      (Duration(days: 50), 0xFFFFFFFF),
+    ];
+    for (final (timeout, ms) in cases) {
+      test('$timeout waits $ms ms', () {
+        expect(timeout.timeoutMs, ms);
+      });
+    }
+
+    test('a negative timeout throws', () {
+      expect(
+        () => const Duration(milliseconds: -1).timeoutMs,
+        throwsA(
+          isA<ArgumentError>().having((e) => e.message, 'message', 'Negative'),
+        ),
+      );
     });
   });
 
@@ -176,6 +409,8 @@ void main() {
       maxTailFrames: 12,
       lookahead: Duration(seconds: 2),
       dropLateEvents: true,
+      messageCapacity: 13,
+      replyCapacity: 14,
     );
     test('writeTo(config) fills the native configuration', () {
       final config = calloc<bindings.AudGraphConfig>();
@@ -192,6 +427,8 @@ void main() {
         expect(config.ref.fade_frames, 11);
         expect(config.ref.max_tail_frames, 12);
         expect(config.ref.lookahead_ns, 2000000000);
+        expect(config.ref.message_capacity, 13);
+        expect(config.ref.reply_capacity, 14);
         const AudGraphOptions().writeTo(config.ref);
         expect(config.ref.flags, 0);
         expect(config.ref.lookahead_ns, 0);
@@ -210,7 +447,8 @@ void main() {
         ..blocks_rendered = 3
         ..render_time_max_ns = 4
         ..output_peak = 0.5
-        ..realtime_violations = 1;
+        ..realtime_violations = 1
+        ..messages_dropped = 6;
       final read = stats.ref.toDart();
       calloc.free(stats);
       expect(read.state, AudGraphState.running);
@@ -219,6 +457,7 @@ void main() {
       expect(read.renderTimeMaxNs, 4);
       expect(read.outputPeak, 0.5);
       expect(read.realtimeViolations, 1);
+      expect(read.messagesDropped, 6);
     });
   });
 

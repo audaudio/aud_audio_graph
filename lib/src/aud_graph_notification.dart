@@ -10,9 +10,11 @@ import 'aud_graph_constants.dart' as bindings;
 import 'aud_graph_state.dart';
 
 // #############################################################################
-/// What the realtime thread reports to the control thread:
-/// `AudGraphNotification` of the engine. [toOsc] gives the notification of
-/// the OSC vocabulary of `aud_audio_core` where one exists (osc-001).
+/// What the engine reports to the control thread: `AudGraphNotification`
+/// of the engine, from the realtime thread, or of a load, which the control
+/// thread and the workers report (ticket 25). [toOsc] gives the
+/// notification of the OSC vocabulary of `aud_audio_core` where one exists
+/// (osc-001).
 sealed class AudGraphNotification {
   const AudGraphNotification({required this.samplePosition});
 
@@ -99,7 +101,8 @@ final class AudNodeDoneNotification extends AudGraphNotification {
 }
 
 // #############################################################################
-/// A diagnostic of a block: late events, dropped entries, an overload.
+/// A diagnostic of a block: late events, dropped entries, an overload, or
+/// what a node reported (ticket 25).
 final class AudDiagnosticNotification extends AudGraphNotification {
   /// Creates the notification.
   const AudDiagnosticNotification({
@@ -136,7 +139,11 @@ final class AudDiagnosticNotification extends AudGraphNotification {
     AUD_ERROR_CAPACITY => 'a note tracker was full: note ons were dropped',
     AUD_ERROR_STATE => 'a node is parked for its state: its events wait',
     AUD_ERROR_OVERLOAD => 'the block took $value ns, longer than it lasts',
+    AUD_ERROR_UNSUPPORTED when node != 0 =>
+      'node $node refused what it cannot do on the audio thread, '
+          'e.g. a message',
     AUD_ERROR_UNSUPPORTED => 'the transport refused a request',
+    AUD_ERROR_UNDERFLOW => 'a stream could not deliver in time: silence played',
     bindings.AUD_GRAPH_ERROR_REALTIME_VIOLATION =>
       'the realtime thread allocated, freed or logged',
     _ => name,
@@ -241,6 +248,66 @@ final class AudTimeResetNotification extends AudGraphNotification {
   @override
   Map<String, Object?> toJson() => {
     'type': 'timeReset',
+    'count': count,
+    'samplePosition': samplePosition,
+  };
+}
+
+// #############################################################################
+/// A load of a node began, progressed or ended (ticket 25);
+/// `AudGraph.loadOf` says more.
+final class AudLoadNotification extends AudGraphNotification {
+  /// Creates the notification.
+  const AudLoadNotification({
+    required this.node,
+    required this.load,
+    required this.result,
+    required this.progress,
+    required super.samplePosition,
+  });
+
+  /// The handle of the node that loads.
+  final int node;
+
+  /// The id of the load.
+  final int load;
+
+  /// `AUD_PENDING` while the load runs, then its result.
+  final int result;
+
+  /// The progress from 0 to 1.
+  final double progress;
+
+  /// Whether the load still runs.
+  bool get isRunning => result == AUD_PENDING;
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'load',
+    'node': node,
+    'load': load,
+    'result': AudAbi.resultName(result),
+    'progress': progress,
+    'samplePosition': samplePosition,
+  };
+}
+
+// #############################################################################
+/// Nodes sent messages in a block (ticket 25); `AudGraph.messages` carries
+/// them.
+final class AudMessageNotification extends AudGraphNotification {
+  /// Creates the notification.
+  const AudMessageNotification({
+    required this.count,
+    required super.samplePosition,
+  });
+
+  /// The messages of the block.
+  final int count;
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'message',
     'count': count,
     'samplePosition': samplePosition,
   };

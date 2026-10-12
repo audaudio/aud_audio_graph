@@ -14,6 +14,7 @@ import 'package:aud_audio_core/aud_audio_core_bindings.dart' as core;
 import 'package:ffi/ffi.dart';
 
 import 'aud_audio_graph_bindings_generated.dart' as bindings;
+import 'aud_cache_usage.dart';
 import 'aud_graph.dart';
 import 'aud_graph_document.dart';
 import 'aud_graph_exception.dart';
@@ -25,6 +26,8 @@ import 'aud_graph_stats.dart';
 import 'aud_graph_transaction.dart';
 import 'aud_graph_native_conversions.dart';
 import 'aud_graph_transport_state.dart';
+import 'aud_load.dart';
+import 'aud_node_message.dart';
 
 // #############################################################################
 /// The audio graph engine (ticket 19, S2): persistent node instances
@@ -90,6 +93,7 @@ class AudGraphFfi implements AudGraph {
       );
     }
     _buffer = calloc<bindings.AudGraphNotification>(_batch);
+    _messageBuffer = calloc<bindings.AudGraphMessage>(_batch);
     if (registerCoreNodes) AudCoreGain.register(hostApi);
     io = AudNode(
       handle: bindings.AUD_GRAPH_NODE,
@@ -312,7 +316,9 @@ class AudGraphFfi implements AudGraph {
   }
 
   /// Applies [preset] to [node] in the order of the headless host:
-  /// strings, state, parameters. A string `asset:<id>` reaches the node as
+  /// strings, state, parameters; the strings in the order of the node's
+  /// string keys, since a key may depend on one before it (the sampler's
+  /// text on its virtual path). A string `asset:<id>` reaches the node as
   /// the path of the asset (see [addAsset]); the state blob loads through
   /// [loadState]. Throws an [ArgumentError] when the preset does not fit the
   /// node's type or names an unknown asset.
@@ -328,8 +334,9 @@ class AudGraphFfi implements AudGraph {
     if (problems.isNotEmpty) {
       throw ArgumentError.value(preset, 'preset', problems.join('; '));
     }
-    for (final entry in preset.strings.entries) {
-      setString(node, entry.key, entry.value);
+    for (final key in node.descriptor.stringKeys) {
+      final value = preset.strings[key.id];
+      if (value != null) setString(node, key.id, value);
     }
     if (preset.state != null) {
       loadState(node, preset.state!, version: preset.stateVersion);
@@ -595,11 +602,11 @@ class AudGraphFfi implements AudGraph {
   );
 
   /// Applies the string setting [key] (its key or its id) to [node] on the
-  /// calling thread; may block while the node loads. A value `asset:<id>`
-  /// reaches the node as the path of the asset; an unknown asset throws an
-  /// [ArgumentError].
+  /// calling thread. A value `asset:<id>` reaches the node as the path of
+  /// the asset; an unknown asset throws an [ArgumentError]. Returns the id
+  /// of the load the node started on a worker thread, or 0.
   @override
-  void setString(AudNode node, Object key, String value) {
+  int setString(AudNode node, Object key, String value) {
     final index = key is int ? key : node.stringKey(key as String);
     final asset = AudGraphAsset.idOf(value);
     final resolved = asset == null
@@ -607,8 +614,9 @@ class AudGraphFfi implements AudGraph {
         : _assets[asset]?.resolved ??
               (throw ArgumentError.value(value, 'value', 'Unknown asset'));
     final native = resolved.toNativeUtf8();
+    final int load;
     try {
-      AudGraphException.check(
+      load = AudGraphException.check(
         bindings.aud_graph_set_string(
           _pointer,
           node.handle,
@@ -625,7 +633,138 @@ class AudGraphFfi implements AudGraph {
         _strings[node.handle]?[descriptor.id] = value;
       }
     }
+    return load;
   }
+
+  // ...........................................................................
+  // Loads (ticket 25)
+
+  /// The loads the graph keeps: those that run and the last 64 that ended,
+  /// the oldest first.
+  @override
+  List<AudLoad> get loads {
+    final count = AudGraphException.check(
+      bindings.aud_graph_loads(_pointer, nullptr, 0),
+      'count the loads',
+    );
+    final ids = calloc<Int32>(count + 1);
+    try {
+      final taken = bindings.aud_graph_loads(_pointer, ids, count);
+      return [for (var i = 0; i < taken && i < count; i++) ?loadOf(ids[i])];
+    } finally {
+      calloc.free(ids);
+    }
+  }
+
+  /// The load [id], or null when the graph keeps it no longer.
+  @override
+  AudLoad? loadOf(int id) {
+    final info = calloc<bindings.AudLoadInfo>();
+    try {
+      info.ref.struct_size = sizeOf<bindings.AudLoadInfo>();
+      final result = bindings.aud_graph_load_info(_pointer, id, info);
+      if (result == AUD_ERROR_NOT_FOUND) return null;
+      AudGraphException.check(result, 'read load $id');
+      return info.ref.toDart();
+    } finally {
+      calloc.free(info);
+    }
+  }
+
+  /// Asks the running load [id] to stop; false when it ended or is unknown.
+  @override
+  bool cancelLoad(int id) =>
+      bindings.aud_graph_cancel_load(_pointer, id) == AUD_OK;
+
+  /// Completes with the load [id] once it has ended.
+  @override
+  Future<AudLoad> loadEnded(int id) {
+    final current = loadOf(id);
+    if (current == null) {
+      throw ArgumentError.value(id, 'id', 'The graph keeps no such load');
+    }
+    if (!current.isRunning) return Future.value(current);
+    final completer = Completer<AudLoad>();
+    _loadWaiters.putIfAbsent(id, () => []).add(completer);
+    return completer.future;
+  }
+
+  /// Waits until no load of [node] (null: of any node) runs; false after
+  /// [timeout], rounded up to milliseconds; a negative one throws an
+  /// [ArgumentError]. Blocks the calling isolate.
+  @override
+  bool waitLoads({AudNode? node, Duration timeout = Duration.zero}) =>
+      bindings.aud_graph_wait_loads(
+        _pointer,
+        node?.handle ?? 0,
+        timeout.timeoutMs,
+      ) ==
+      AUD_OK;
+
+  // ...........................................................................
+  // Messages of nodes (ticket 25)
+
+  /// Sends [message] to [node] at [at]; the answers arrive on [messages].
+  /// [AudGraph.sendMessage] names the limits of a message and what throws.
+  @override
+  void sendMessage(
+    AudNode node,
+    AudOscMessage message, {
+    AudTimestamp at = const AudTimestamp.immediate(),
+    int id = 0,
+  }) => using((arena) {
+    final time = arena<core.AudTimestamp>();
+    at.writeTo(time);
+    AudGraphException.check(
+      bindings.aud_graph_send_message(
+        _pointer,
+        node.handle,
+        message.writeNative(arena),
+        at.isImmediate ? nullptr : time,
+        id,
+      ),
+      'send ${message.address} to ${node.name}',
+    );
+  });
+
+  /// The messages the nodes sent, as [pump] takes them.
+  @override
+  Stream<AudNodeMessage> get messages => _messages.stream;
+
+  // ...........................................................................
+  // The resources of the process (ticket 25)
+
+  /// The sample cache budget of the process in bytes.
+  @override
+  int get cacheBudget => bindings.aud_cache_budget();
+
+  @override
+  set cacheBudget(int bytes) {
+    if (bytes < 0) throw ArgumentError.value(bytes, 'bytes', 'Negative');
+    bindings.aud_cache_set_budget(bytes);
+  }
+
+  /// The caches, the budget and the worker threads of the process.
+  @override
+  AudCacheUsage get cacheUsage {
+    final usage = calloc<bindings.AudCacheUsage>();
+    try {
+      usage.ref.struct_size = sizeOf<bindings.AudCacheUsage>();
+      AudGraphException.check(
+        bindings.aud_cache_usage(usage),
+        'read the cache usage',
+      );
+      return usage.ref.toDart();
+    } finally {
+      calloc.free(usage);
+    }
+  }
+
+  /// Waits until no task of the worker threads waits or runs; [timeout]
+  /// counts like the timeout of [waitLoads].
+  @override
+  bool waitTasks({Duration timeout = Duration.zero}) =>
+      bindings.aud_tasks_wait_idle(timeout.timeoutMs) == AUD_OK;
 
   /// Sends [request] to the transport.
   @override
@@ -687,6 +826,13 @@ class AudGraphFfi implements AudGraph {
         setString(_nodeOf(command.node), command.key, command.value);
       case AudTransportCommand():
         transport(command.request);
+      case AudMessageCommand():
+        sendMessage(
+          _nodeOf(command.node),
+          command.message,
+          at: command.at,
+          id: command.id,
+        );
     }
   }
 
@@ -761,24 +907,42 @@ class AudGraphFfi implements AudGraph {
     _listener?.close();
     _listener = null;
     calloc.free(_buffer);
+    calloc.free(_messageBuffer);
     for (final (_, completer) in _waiting) {
       completer.complete();
     }
     _waiting.clear();
+    // The loads of the nodes ended with them.
+    for (final MapEntry(key: id, value: completers) in _loadWaiters.entries) {
+      for (final completer in completers) {
+        completer.complete(
+          AudLoad(
+            id: id,
+            node: 0,
+            result: AUD_ERROR_CANCELLED,
+            message: 'The graph was disposed',
+          ),
+        );
+      }
+    }
+    _loadWaiters.clear();
     unawaited(_notifications.close());
+    unawaited(_messages.close());
   }
 
   // ...........................................................................
   // Notifications
 
-  /// The notifications of the realtime thread, as [pump] takes them.
+  /// The notifications of the engine - of the realtime thread and of the
+  /// loads -, as [pump] takes them.
   @override
   Stream<AudGraphNotification> get notifications => _notifications.stream;
 
   /// Takes the waiting notifications, completes the futures of [adopted]
-  /// and adds them to [notifications]; returns their number. The listener
-  /// calls this when the realtime thread wakes it; tests call it after
-  /// rendering offline.
+  /// and of [loadEnded] and adds them to [notifications], takes the
+  /// messages of the nodes for [messages]; returns the number of
+  /// notifications. The listener calls this when the engine wakes it;
+  /// tests call it after rendering offline.
   @override
   int pump() {
     if (isDisposed) return 0;
@@ -792,6 +956,17 @@ class AudGraphFfi implements AudGraph {
         _dispatch(_buffer[i].toDart());
       }
       total += count;
+      if (count < _batch) break;
+    }
+    // The messages of the nodes (ticket 25).
+    while (true) {
+      final count = AudGraphException.check(
+        bindings.aud_graph_take_messages(_pointer, _messageBuffer, _batch),
+        'take messages',
+      );
+      for (var i = 0; i < count; i++) {
+        _messages.add(_messageBuffer[i].toDart());
+      }
       if (count < _batch) return total;
     }
   }
@@ -868,8 +1043,9 @@ class AudGraphFfi implements AudGraph {
   /// `watchdog: true` of aud_audio_graph (ticket 20).
   static bool get watchdogEnabled => bindings.aud_graph_watchdog_enabled() != 0;
 
-  /// The allocations, frees and log calls the watchdog caught on rendering
-  /// threads of the process since [resetWatchdog]; 0 without the watchdog.
+  /// The allocations, frees, log calls and control calls of the host api
+  /// the watchdog caught on rendering threads of the process since
+  /// [resetWatchdog]; 0 without the watchdog.
   static int get watchdogViolations => bindings.aud_graph_watchdog_violations();
 
   /// Zeroes [watchdogViolations].
@@ -1028,6 +1204,7 @@ class AudGraphFfi implements AudGraph {
 
   late Pointer<bindings.AudGraph> _pointer;
   late final Pointer<bindings.AudGraphNotification> _buffer;
+  late final Pointer<bindings.AudGraphMessage> _messageBuffer;
   NativeCallable<Void Function(Pointer<Void>)>? _listener;
   final Map<int, AudNode> _nodes = {};
   final Map<int, Map<String, double>> _params = {};
@@ -1040,6 +1217,10 @@ class AudGraphFfi implements AudGraph {
   // Synchronous, so that a pump() delivers before it returns.
   final StreamController<AudGraphNotification> _notifications =
       StreamController.broadcast(sync: true);
+  final StreamController<AudNodeMessage> _messages = StreamController.broadcast(
+    sync: true,
+  );
+  final Map<int, List<Completer<AudLoad>>> _loadWaiters = {};
 
   void _onWake(Pointer<Void> _) => pump();
 
@@ -1088,6 +1269,22 @@ class AudGraphFfi implements AudGraph {
   }
 
   void _dispatch(AudGraphNotification notification) {
+    if (notification is AudLoadNotification && !notification.isRunning) {
+      final completers = _loadWaiters.remove(notification.load);
+      if (completers != null) {
+        final ended =
+            loadOf(notification.load) ??
+            AudLoad(
+              id: notification.load,
+              node: notification.node,
+              result: notification.result,
+              progress: notification.progress,
+            );
+        for (final completer in completers) {
+          completer.complete(ended);
+        }
+      }
+    }
     if (notification is AudRevisionAdoptedNotification) {
       _waiting.removeWhere((entry) {
         if (entry.$1 > notification.revision) return false;

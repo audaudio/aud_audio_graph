@@ -13,6 +13,7 @@ import 'aud_audio_graph_bindings_generated.dart' as bindings;
 import 'aud_graph_ffi.dart';
 import 'aud_graph_document.dart';
 import 'aud_graph_exception.dart';
+import 'aud_graph_native_conversions.dart';
 import 'aud_host_asset.dart';
 import 'aud_host_document_info.dart';
 import 'aud_host_param.dart';
@@ -257,6 +258,14 @@ class AudHost {
   /// The tail of the graph in frames; [AudGraph.infiniteTail] when a node
   /// never ends.
   int get tail => bindings.aud_host_tail(_pointer);
+
+  /// Waits until the loads the document started have ended, e.g. the
+  /// instruments a sampler loads on a worker thread (ticket 25); false after
+  /// [timeout]. Zero waits as long as it takes, a timeout shorter than a
+  /// millisecond waits one, a negative one throws an [ArgumentError]. Blocks
+  /// the calling isolate.
+  bool waitLoads({Duration timeout = Duration.zero}) =>
+      bindings.aud_host_wait_loads(_pointer, timeout.timeoutMs) == AUD_OK;
 
   // ...........................................................................
   /// The assets of the loaded document.

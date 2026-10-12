@@ -21,6 +21,8 @@ class AudGraphOptions {
     this.maxTailFrames = 0,
     this.lookahead = Duration.zero,
     this.dropLateEvents = false,
+    this.messageCapacity = 0,
+    this.replyCapacity = 0,
   });
 
   /// The options from [toJson].
@@ -40,6 +42,8 @@ class AudGraphOptions {
           microseconds: (json['lookaheadUs'] as num?)?.toInt() ?? 0,
         ),
         dropLateEvents: json['dropLateEvents'] == true,
+        messageCapacity: (json['messageCapacity'] as num?)?.toInt() ?? 0,
+        replyCapacity: (json['replyCapacity'] as num?)?.toInt() ?? 0,
       );
 
   // ...........................................................................
@@ -77,6 +81,12 @@ class AudGraphOptions {
   /// Whether late events are dropped instead of played at the block start.
   final bool dropLateEvents;
 
+  /// The messages that wait for their node (ticket 25); 0 = 256.
+  final int messageCapacity;
+
+  /// The messages of nodes that wait for the control thread; 0 = 256.
+  final int replyCapacity;
+
   // ...........................................................................
 
   /// The options as JSON.
@@ -92,6 +102,8 @@ class AudGraphOptions {
     'maxTailFrames': maxTailFrames,
     'lookaheadUs': lookahead.inMicroseconds,
     'dropLateEvents': dropLateEvents,
+    'messageCapacity': messageCapacity,
+    'replyCapacity': replyCapacity,
   };
 
   @override

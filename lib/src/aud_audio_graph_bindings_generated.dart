@@ -14,6 +14,21 @@
 import 'package:aud_audio_core/aud_audio_core_bindings.dart' as core;
 import 'dart:ffi' as ffi;
 
+/// [any thread] The sample cache budget of the process in bytes, at most
+/// INT64_MAX.
+@ffi.Native<ffi.Uint64 Function()>()
+external int aud_cache_budget();
+
+/// [control] Sets the sample cache budget of the process in bytes (default
+/// 256 MB); a smaller budget trims at once, on the calling thread. A budget
+/// above INT64_MAX is INT64_MAX: no limit.
+@ffi.Native<ffi.Int32 Function(ffi.Uint64)>()
+external int aud_cache_set_budget(int bytes);
+
+/// [any thread] The caches, the budget and the workers.
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<AudCacheUsage>)>()
+external int aud_cache_usage(ffi.Pointer<AudCacheUsage> usage);
+
 /// [control] Opens a transaction; AUD_ERROR_STATE while one is open.
 @ffi.Native<ffi.Int32 Function(ffi.Pointer<AudGraph>)>()
 external int aud_graph_begin(ffi.Pointer<AudGraph> graph);
@@ -22,6 +37,12 @@ external int aud_graph_begin(ffi.Pointer<AudGraph> graph);
 /// of `node` when `id` is 0, or every waiting event when both are 0.
 @ffi.Native<ffi.Int32 Function(ffi.Pointer<AudGraph>, ffi.Int32, ffi.Uint32)>()
 external int aud_graph_cancel(ffi.Pointer<AudGraph> graph, int node, int id);
+
+/// [control] Asks a running load to stop; the node ends it with
+/// AUD_ERROR_CANCELLED as soon as it looks. AUD_ERROR_NOT_FOUND for a load
+/// that ended or is unknown.
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<AudGraph>, ffi.Int32)>()
+external int aud_graph_cancel_load(ffi.Pointer<AudGraph> graph, int id);
 
 /// [control] Compiles the topology and publishes the program; returns the
 /// revision (> 0) or an error code, e.g. AUD_ERROR_CYCLE. On an error the
@@ -80,7 +101,8 @@ external ffi.Pointer<AudGraph> aud_graph_create(
 /// [control] Creates and prepares an instance of a registered type; returns
 /// its handle (> 0) or an error code: AUD_ERROR_UNKNOWN_TYPE,
 /// AUD_ERROR_FORMAT for channels outside the descriptor's range,
-/// AUD_ERROR_CAPACITY when max_nodes is reached. The instance renders from
+/// AUD_ERROR_CAPACITY when max_nodes is reached, the error of a create or
+/// prepare that failed - which spends a handle. The instance renders from
 /// the next commit on.
 @ffi.Native<
   ffi.Int32 Function(
@@ -96,7 +118,9 @@ external int aud_graph_create_node(
 );
 
 /// [control] Destroys the graph and every instance. The stream must have
-/// stopped calling aud_graph_render.
+/// stopped calling aud_graph_render. The loads the nodes leave running end
+/// as cancelled (see Loads); the call returns once the tasks the nodes
+/// posted have run - not those of other graphs (ticket 25).
 @ffi.Native<ffi.Void Function(ffi.Pointer<AudGraph>)>()
 external void aud_graph_destroy(ffi.Pointer<AudGraph> graph);
 
@@ -150,6 +174,28 @@ external int aud_graph_get_stats(
 @ffi.Native<ffi.Pointer<core.AudHostApi> Function(ffi.Pointer<AudGraph>)>()
 external ffi.Pointer<core.AudHostApi> aud_graph_host_api(
   ffi.Pointer<AudGraph> graph,
+);
+
+/// [control] A load by its id; AUD_ERROR_NOT_FOUND when the graph keeps it
+/// no longer.
+@ffi.Native<
+  ffi.Int32 Function(ffi.Pointer<AudGraph>, ffi.Int32, ffi.Pointer<AudLoadInfo>)
+>()
+external int aud_graph_load_info(
+  ffi.Pointer<AudGraph> graph,
+  int id,
+  ffi.Pointer<AudLoadInfo> info,
+);
+
+/// [control] The ids of the loads the graph keeps, the oldest first; returns
+/// their number and writes at most `capacity`.
+@ffi.Native<
+  ffi.Int32 Function(ffi.Pointer<AudGraph>, ffi.Pointer<ffi.Int32>, ffi.Uint32)
+>()
+external int aud_graph_loads(
+  ffi.Pointer<AudGraph> graph,
+  ffi.Pointer<ffi.Int32> ids,
+  int capacity,
 );
 
 /// [control] The prepared largest block.
@@ -293,7 +339,8 @@ external int aud_graph_prepare(
 /// [control] Removes a node inside the open transaction: its connections
 /// go with it, the instance retires at the commit and is freed once its
 /// fade or tail has passed (AUD_NOTIFY_NODE_DONE). A node that never
-/// rendered is freed at once.
+/// rendered is freed at once. The commit cancels the loads of the node
+/// (ticket 25; see Loads).
 @ffi.Native<ffi.Int32 Function(ffi.Pointer<AudGraph>, ffi.Int32)>()
 external int aud_graph_remove_node(ffi.Pointer<AudGraph> graph, int node);
 
@@ -380,6 +427,32 @@ external int aud_graph_send_event(
   int id,
 );
 
+/// [control, one producer] Sends a message to a node that takes messages,
+/// at `at` (NULL: the next block); an `id` above zero lets it be cancelled
+/// while it waits (aud_graph_cancel). The graph copies the message:
+/// AUD_ERROR_CAPACITY when every slot waits for its node, or the message
+/// takes more than AUD_GRAPH_MESSAGE_BYTES or carries more than
+/// AUD_GRAPH_MAX_MESSAGE_ARGS arguments; AUD_ERROR_INVALID_ARGUMENT for a
+/// path that does not start with a slash or an argument of an unknown type,
+/// AUD_ERROR_UNSUPPORTED for a node without messages; the rest as
+/// aud_graph_send_event.
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<AudGraph>,
+    ffi.Int32,
+    ffi.Pointer<core.AudMessage>,
+    ffi.Pointer<core.AudTimestamp>,
+    ffi.Uint32,
+  )
+>()
+external int aud_graph_send_message(
+  ffi.Pointer<AudGraph> graph,
+  int node,
+  ffi.Pointer<core.AudMessage> message,
+  ffi.Pointer<core.AudTimestamp> at,
+  int id,
+);
+
 /// [control] Sets the listener the notification thread wakes; NULL removes
 /// it.
 @ffi.Native<
@@ -415,7 +488,10 @@ external int aud_graph_set_param(
   int ramp_frames,
 );
 
-/// [control] Applies a string setting on the calling thread; may block.
+/// [control] Applies a string setting on the calling thread; returns AUD_OK,
+/// an error code, or the id (> 0) of a load the node started on a worker
+/// (ticket 25; see Loads). A node that loads on the calling thread may
+/// block.
 @ffi.Native<
   ffi.Int32 Function(
     ffi.Pointer<AudGraph>,
@@ -457,6 +533,21 @@ external int aud_graph_stop(ffi.Pointer<AudGraph> graph);
 /// the pending events stay. Returns when no render is in flight.
 @ffi.Native<ffi.Int32 Function(ffi.Pointer<AudGraph>)>()
 external int aud_graph_suspend(ffi.Pointer<AudGraph> graph);
+
+/// [control] Takes the messages nodes sent, at most `capacity`; returns the
+/// number taken.
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<AudGraph>,
+    ffi.Pointer<AudGraphMessage>,
+    ffi.Uint32,
+  )
+>()
+external int aud_graph_take_messages(
+  ffi.Pointer<AudGraph> graph,
+  ffi.Pointer<AudGraphMessage> out,
+  int capacity,
+);
 
 /// [control] Takes the waiting notifications, at most `capacity`, and frees
 /// the instances that finished; returns the number taken.
@@ -530,6 +621,17 @@ external int aud_graph_transport(
 external int aud_graph_transport_state(
   ffi.Pointer<AudGraph> graph,
   ffi.Pointer<AudGraphTransportState> state,
+);
+
+/// [control] Waits until no load of `node` (0: of any node) runs; AUD_OK, or
+/// AUD_PENDING after `timeout_ms` (0 waits as long as it takes). Then the
+/// tails of the nodes are read again, so that the output tail counts what
+/// the loads changed.
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<AudGraph>, ffi.Int32, ffi.Uint32)>()
+external int aud_graph_wait_loads(
+  ffi.Pointer<AudGraph> graph,
+  int node,
+  int timeout_ms,
 );
 
 /// Whether the watchdog is compiled in.
@@ -792,6 +894,19 @@ external int aud_host_set_param(
 @ffi.Native<ffi.Uint32 Function(ffi.Pointer<AudHost>)>()
 external int aud_host_tail(ffi.Pointer<AudHost> host);
 
+/// [control] Waits until the loads the document started have ended, e.g.
+/// the instruments a sampler loads on a worker (ticket 25): aud_graph_wait_loads
+/// on the host's graph. AUD_OK, or AUD_PENDING after `timeout_ms`.
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<AudHost>, ffi.Uint32)>()
+external int aud_host_wait_loads(ffi.Pointer<AudHost> host, int timeout_ms);
+
+/// [control] Waits until no task of the workers waits or runs - of any
+/// graph; AUD_OK, or AUD_PENDING after `timeout_ms` (0 waits as long as it
+/// takes). The offline renderer waits like this before its first block and
+/// after every block.
+@ffi.Native<ffi.Int32 Function(ffi.Uint32)>()
+external int aud_tasks_wait_idle(int timeout_ms);
+
 const int AUD_CONNECTION_LOW_LATENCY = 1;
 
 const int AUD_FILTER_PARAM_CUTOFF = 0;
@@ -814,6 +929,12 @@ const String AUD_GRAPH_FILTER_TYPE_ID = 'aud.graph.filter';
 
 const String AUD_GRAPH_INTERNAL_TRANSPORT_ID = 'aud.graph.transport';
 
+const int AUD_GRAPH_MAX_MESSAGE_ARGS = 16;
+
+const int AUD_GRAPH_MAX_TEXT = 256;
+
+const int AUD_GRAPH_MESSAGE_BYTES = 1000;
+
 const String AUD_GRAPH_MIXER_TYPE_ID = 'aud.graph.mixer';
 
 const int AUD_GRAPH_NODE = 0;
@@ -831,6 +952,8 @@ const int AUD_GRAPH_SUSPENDED = 3;
 const String AUD_GRAPH_TAP_TYPE_ID = 'aud.graph.tap';
 
 const int AUD_GRAPH_VIOLATION_ALLOC = 4;
+
+const int AUD_GRAPH_VIOLATION_CONTROL = 32;
 
 const int AUD_GRAPH_VIOLATION_DELETE = 2;
 
@@ -852,6 +975,10 @@ const int AUD_NOTIFY_DIAGNOSTIC = 4;
 
 const int AUD_NOTIFY_EVENT = 5;
 
+const int AUD_NOTIFY_LOAD = 8;
+
+const int AUD_NOTIFY_MESSAGE = 9;
+
 const int AUD_NOTIFY_NODE_DONE = 3;
 
 const int AUD_NOTIFY_REVISION = 1;
@@ -867,6 +994,68 @@ const int AUD_OSCILLATOR_PARAM_AMPLITUDE = 1;
 const int AUD_OSCILLATOR_PARAM_FREQUENCY = 0;
 
 const int AUD_OSCILLATOR_PARAM_WAVEFORM = 2;
+
+/// ............................................................................
+/// The resources of the process (lifecycle-002, ticket 25)
+///
+/// The graphs of a process share two worker threads, which run the tasks of
+/// the packages (AudHostApi.post_task), and one sample cache budget for the
+/// caches the packages register: when the caches together hold more, the
+/// engine asks the largest to free what nobody uses, the least recently
+/// used first. The budget belongs to the process because the packages share
+/// what they load between graphs.
+final class AudCacheUsage extends ffi.Struct {
+  @ffi.Uint32()
+  external int struct_size;
+
+  /// registered caches
+  @ffi.Uint32()
+  external int caches;
+
+  /// bytes
+  @ffi.Uint64()
+  external int budget;
+
+  /// the caches hold together
+  @ffi.Int64()
+  external int bytes;
+
+  /// trim calls so far
+  @ffi.Uint64()
+  external int trims;
+
+  /// bytes the trims freed so far
+  @ffi.Uint64()
+  external int trimmed;
+
+  /// worker threads running
+  @ffi.Uint32()
+  external int workers;
+
+  /// tasks queued or running
+  @ffi.Uint32()
+  external int tasks;
+
+  static ffi.Pointer<AudCacheUsage> $allocate(
+    ffi.Allocator $allocator, {
+    required int struct_size,
+    required int caches,
+    required int budget,
+    required int bytes,
+    required int trims,
+    required int trimmed,
+    required int workers,
+    required int tasks,
+  }) => $allocator<AudCacheUsage>()
+    ..ref.struct_size = struct_size
+    ..ref.caches = caches
+    ..ref.budget = budget
+    ..ref.bytes = bytes
+    ..ref.trims = trims
+    ..ref.trimmed = trimmed
+    ..ref.workers = workers
+    ..ref.tasks = tasks;
+}
 
 final class AudGraph extends ffi.Opaque {}
 
@@ -938,6 +1127,15 @@ final class AudGraphConfig extends ffi.Struct {
   @ffi.Int64()
   external int lookahead_ns;
 
+  /// 0 = 256 messages waiting for their node
+  @ffi.Uint32()
+  external int message_capacity;
+
+  /// 0 = 256 messages of nodes for the control
+  /// thread
+  @ffi.Uint32()
+  external int reply_capacity;
+
   static ffi.Pointer<AudGraphConfig> $allocate(
     ffi.Allocator $allocator, {
     required int struct_size,
@@ -958,6 +1156,8 @@ final class AudGraphConfig extends ffi.Struct {
     required int fade_frames,
     required int max_tail_frames,
     required int lookahead_ns,
+    required int message_capacity,
+    required int reply_capacity,
   }) => $allocator<AudGraphConfig>()
     ..ref.struct_size = struct_size
     ..ref.sample_rate = sample_rate
@@ -976,7 +1176,9 @@ final class AudGraphConfig extends ffi.Struct {
     ..ref.max_events_per_block = max_events_per_block
     ..ref.fade_frames = fade_frames
     ..ref.max_tail_frames = max_tail_frames
-    ..ref.lookahead_ns = lookahead_ns;
+    ..ref.lookahead_ns = lookahead_ns
+    ..ref.message_capacity = message_capacity
+    ..ref.reply_capacity = reply_capacity;
 }
 
 /// Wakes the control thread: notifications wait. Called on the notification
@@ -988,7 +1190,34 @@ typedef AudGraphListenerFunction =
 typedef DartAudGraphListenerFunction =
     void Function(ffi.Pointer<ffi.Void> user);
 
-/// A notification of the realtime thread.
+/// A message a node sent. `data` holds the path with its terminator, then
+/// per argument its OSC type tag (one byte) and its value in little endian:
+/// i and f 4 bytes, h and d 8 bytes, s the text with its terminator, b the
+/// size in 4 bytes and the bytes; T, F, N and I carry no value.
+final class AudGraphMessage extends ffi.Struct {
+  @ffi.Uint32()
+  external int struct_size;
+
+  @ffi.Int32()
+  external int node;
+
+  /// the block it was sent in
+  @ffi.Int64()
+  external int sample_position;
+
+  @ffi.Uint32()
+  external int num_args;
+
+  /// bytes used in `data`
+  @ffi.Uint32()
+  external int size;
+
+  @ffi.Array.multi([1000])
+  external ffi.Array<ffi.Uint8> data;
+}
+
+/// A notification for the control thread: of the realtime thread, or of a
+/// load, which the control thread and the workers report (ticket 25).
 final class AudGraphNotification extends ffi.Struct {
   @ffi.Uint32()
   external int struct_size;
@@ -1113,6 +1342,11 @@ final class AudGraphStats extends ffi.Struct {
   @ffi.Uint64()
   external int realtime_violations;
 
+  /// Messages of nodes dropped: the reply queue was full, or a message was
+  /// beyond AUD_GRAPH_MESSAGE_BYTES or AUD_GRAPH_MAX_MESSAGE_ARGS.
+  @ffi.Uint64()
+  external int messages_dropped;
+
   static ffi.Pointer<AudGraphStats> $allocate(
     ffi.Allocator $allocator, {
     required int struct_size,
@@ -1135,6 +1369,7 @@ final class AudGraphStats extends ffi.Struct {
     required double output_peak,
     required int reserved2,
     required int realtime_violations,
+    required int messages_dropped,
   }) => $allocator<AudGraphStats>()
     ..ref.struct_size = struct_size
     ..ref.state = state
@@ -1155,7 +1390,8 @@ final class AudGraphStats extends ffi.Struct {
     ..ref.reserved = reserved
     ..ref.output_peak = output_peak
     ..ref.reserved2 = reserved2
-    ..ref.realtime_violations = realtime_violations;
+    ..ref.realtime_violations = realtime_violations
+    ..ref.messages_dropped = messages_dropped;
 }
 
 /// The transport as the realtime thread last saw it.
@@ -1240,7 +1476,10 @@ final class AudGraphTransportState extends ffi.Struct {
 /// setting whose value is `asset:<id>` names one. The host resolves the
 /// path against its base directory, checks that the file exists before
 /// anything is applied and hands the resolved path to the node's
-/// set_string, which loads the file.
+/// set_string, which loads the file. The paths are not confined to the base
+/// directory - a sample library lives elsewhere -, so a document names any
+/// file the process may read; a host that loads documents it does not trust
+/// checks them with aud_host_asset first.
 ///
 /// Parameter ids: FNV-1a over `<node id>/<parameter id>` with the top bit
 /// cleared - 31 bits, as VST3 hosts expect (JUCE clears the same bit), and
@@ -1436,6 +1675,46 @@ final class AudHostRenderRequest extends ffi.Struct {
     ..ref.num_output_events = num_output_events
     ..ref.dropped_output_events = dropped_output_events
     ..ref.reserved = reserved;
+}
+
+/// A load as the graph knows it.
+final class AudLoadInfo extends ffi.Struct {
+  @ffi.Uint32()
+  external int struct_size;
+
+  @ffi.Int32()
+  external int id;
+
+  /// the handle of the node that loads
+  @ffi.Int32()
+  external int node;
+
+  /// AUD_PENDING while it runs, then the result
+  @ffi.Int32()
+  external int result;
+
+  /// 0 to 1
+  @ffi.Float()
+  external double progress;
+
+  @ffi.Uint32()
+  external int cancelled;
+
+  /// host time of the begin
+  @ffi.Int64()
+  external int start_ns;
+
+  /// host time of the end, 0 while it runs
+  @ffi.Int64()
+  external int end_ns;
+
+  /// what loads, e.g. the file
+  @ffi.Array.multi([256])
+  external ffi.Array<ffi.Char> name;
+
+  /// Why a load failed, or what a load that ended well could not do.
+  @ffi.Array.multi([256])
+  external ffi.Array<ffi.Char> message;
 }
 
 /// How a node instance is created: its bus formats. NULL or zero bus counts

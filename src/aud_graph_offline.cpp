@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "aud_graph_internal.hpp"
+#include "aud_graph_resources.hpp"
 
 using namespace aud;
 
@@ -56,6 +57,10 @@ AUD_EXPORT int32_t aud_graph_render_offline(AudGraph* graph,
   int64_t position = request->start_sample_position;
   uint32_t rendered = 0;
   uint32_t cycle = 0;
+  // What the workers do before the render - a load a string setting
+  // started - is done before the first block, as after every block below
+  // (ticket 25).
+  Resources::get().waitIdle(0);
   graph->offline = true;
   while (rendered < request->frames) {
     uint32_t block = request->num_block_sizes > 0
@@ -97,6 +102,10 @@ AUD_EXPORT int32_t aud_graph_render_offline(AudGraph* graph,
       graph->offline = false;
       return result;
     }
+    // What the block asked of the workers - a sampler's streaming reads -
+    // is there before the next block, so an offline render repeats on any
+    // machine (ticket 25).
+    Resources::get().waitIdle(0);
     position += block;
     rendered += block;
   }
