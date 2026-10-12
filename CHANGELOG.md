@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 - 2026-10-12
 
 ### Added
 
@@ -55,11 +55,17 @@
 - Add the Dart and doc fixes of the ticket 25 review
 
 - README.md names the new C API and Dart members: aud_tasks_wait_idle, aud_cache_budget, aud_cache_usage, AUD_NOTIFY_MESSAGE, the message limits and capacities, messages_dropped, AUD_GRAPH_VIOLATION_CONTROL; loads, loadOf, cancelLoad, waitLoads, waitTasks, AudHost.waitLoads, AudNodeMessage, AudLoadNotification, AudMessageNotification
+
 - README.de.md says in German what README.md says: ABI 0.4, the resources of the process, the headless host with its loads, the Dart API and the tests
+
 - A diagnostic AUD_ERROR_UNSUPPORTED of a node reads as a refusal of the node, not of the transport
+
 - waitLoads, waitTasks and AudHost.waitLoads round a timeout up to milliseconds: one under a millisecond waits one, not as long as it takes; a negative one throws an ArgumentError
+
 - sendMessage documents the limits of a message and what it throws
+
 - The docs cite lifecycle-002 and osc-002 and name loadOf, the message of a load that ended well, the notifications of the loads and the control calls the watchdog counts
+
 - The error tests check the type and the message; AudCacheUsage and AudNodeMessage get their landmarks
 
 ## 0.4.0 - 2026-10-09
@@ -96,7 +102,6 @@
 - Refuse descriptors without parameter or string ids
 
 - Add AudHost and the asset table of the graph document on the Dart side
-
 
 ## 0.2.0 - 2026-10-08
 
