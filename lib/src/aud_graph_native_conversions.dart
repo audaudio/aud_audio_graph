@@ -132,6 +132,10 @@ extension AudNativeGraphTimingToDart on bindings.AudGraphTiming {
     maxPeriodNs: max_period_ns,
     nominalPeriodNs: nominal_period_ns,
     timeFilterResets: time_filter_resets,
+    periodHistogram: List.unmodifiable([
+      for (var i = 0; i <= bindings.AUD_GRAPH_PERIOD_BINS; i++)
+        period_histogram[i],
+    ]),
   );
 }
 

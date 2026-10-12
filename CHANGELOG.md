@@ -19,7 +19,13 @@
 - Add aud_midi_standard from pub.dev
 
 - aud_midi_standard ^0.1.0 hosted for the tests, as the aud_midi family resolves it (ticket 26)
+
 - The example runs against the ticket's aud_audio_core again
+
+- Add a histogram of the render periods to the timing
+
+- AudGraphTiming carries the gaps between two renders in bins of 100 µs since the last reset of the time filter; offline the block durations
+- periodPercentileNs, periodMedianNs, periodP99Ns, periodP999Ns: P of midi-003 without the outliers that the longest gap keeps
 
 ## 0.5.0 - 2026-10-12
 

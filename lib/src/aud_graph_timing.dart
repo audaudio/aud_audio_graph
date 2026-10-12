@@ -4,10 +4,13 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
+import 'aud_graph_constants.dart' as bindings;
+
 // #############################################################################
 /// The timing of the engine as the last block saw it (time-001,
 /// midi-003): `AudGraphTiming` of the engine, what a bridge needs to
-/// choose the latency C = P + L + m of its sources.
+/// choose the latency C = P + L + m of its sources - P as a high
+/// percentile of [periodHistogram].
 class AudGraphTiming {
   /// Creates a snapshot of the timing.
   const AudGraphTiming({
@@ -21,7 +24,14 @@ class AudGraphTiming {
     this.maxPeriodNs = 0,
     this.nominalPeriodNs = 0,
     this.timeFilterResets = 0,
+    this.periodHistogram = const [],
   });
+
+  /// The width of a bin of [periodHistogram] in nanoseconds: 100 us.
+  static const int periodBinNs = bindings.AUD_GRAPH_PERIOD_BIN_NS;
+
+  /// The bins of [periodHistogram] below the overflow bin: up to 51.2 ms.
+  static const int periodBins = bindings.AUD_GRAPH_PERIOD_BINS;
 
   // ...........................................................................
   /// Whether a block has rendered; the other fields are 0 before.
@@ -46,9 +56,10 @@ class AudGraphTiming {
   /// frames: L of midi-003.
   final int outputLatencyFrames;
 
-  /// P of midi-003: the longest time between the starts of two renders
-  /// since the last reset of the time filter, in nanoseconds; offline the
-  /// longest block.
+  /// The longest time between the starts of two renders since the last
+  /// reset of the time filter, in nanoseconds; offline the longest block.
+  /// A diagnostic: one gap at start-up ruins it, [periodPercentileNs]
+  /// gives P of midi-003.
   final int maxPeriodNs;
 
   /// The prepared largest block over the rate, in nanoseconds.
@@ -56,6 +67,12 @@ class AudGraphTiming {
 
   /// The resets of the time filter.
   final int timeFilterResets;
+
+  /// The times between the starts of two renders since the last reset of
+  /// the time filter - offline the block durations - in bins of
+  /// [periodBinNs], the last bin for what lies beyond [periodBins] bins;
+  /// empty before a block rendered.
+  final List<int> periodHistogram;
 
   /// The output latency in nanoseconds.
   double get outputLatencyNs =>
@@ -74,7 +91,39 @@ class AudGraphTiming {
       : samplePosition + ((hostTime - hostTimeNs) * sampleRate / 1e9).round();
 
   // ...........................................................................
-  /// The timing as JSON.
+  /// The period in nanoseconds below which [fraction] of the renders
+  /// stayed - the upper edge of the bin -, null without renders; at least
+  /// `periodBins * periodBinNs` when the fraction lies in the overflow
+  /// bin. P of midi-003 is [periodP999Ns].
+  int? periodPercentileNs(double fraction) {
+    if (fraction < 0 || fraction > 1) {
+      throw ArgumentError.value(fraction, 'fraction', 'Not between 0 and 1');
+    }
+    var total = 0;
+    for (final count in periodHistogram) {
+      total += count;
+    }
+    if (total == 0) return null;
+    final wanted = fraction * total;
+    var seen = 0;
+    for (var bin = 0; bin < periodHistogram.length; bin++) {
+      seen += periodHistogram[bin];
+      if (seen > 0 && seen >= wanted) return (bin + 1) * periodBinNs;
+    }
+    return periodHistogram.length * periodBinNs; // coverage:ignore-line
+  }
+
+  /// The median period in nanoseconds, null without renders.
+  int? get periodMedianNs => periodPercentileNs(0.5);
+
+  /// The period of the 99th percentile in nanoseconds.
+  int? get periodP99Ns => periodPercentileNs(0.99);
+
+  /// The period of the 99.9th percentile in nanoseconds: P of midi-003.
+  int? get periodP999Ns => periodPercentileNs(0.999);
+
+  // ...........................................................................
+  /// The timing as JSON; the histogram as its percentiles.
   Map<String, Object?> toJson() => {
     'valid': valid,
     'offline': offline,
@@ -86,6 +135,9 @@ class AudGraphTiming {
     'maxPeriodNs': maxPeriodNs,
     'nominalPeriodNs': nominalPeriodNs,
     'timeFilterResets': timeFilterResets,
+    'periodMedianNs': periodMedianNs,
+    'periodP99Ns': periodP99Ns,
+    'periodP999Ns': periodP999Ns,
   };
 
   @override

@@ -333,6 +333,12 @@ AUD_EXPORT int32_t aud_graph_timing(const AudGraph* graph,
     timing->reserved = 0;
     std::atomic_thread_fence(std::memory_order_acquire);
     if (t.generation.load(std::memory_order_acquire) != before) continue;
+    // The histogram after the snapshot: relaxed counters, each exact on
+    // its own, so no attempt is spent on it.
+    for (uint32_t i = 0; i <= AUD_GRAPH_PERIOD_BINS; ++i) {
+      timing->period_histogram[i] =
+          graph->periodHistogram[i].load(std::memory_order_relaxed);
+    }
     return (timing->flags & AUD_TIMING_VALID) ? AUD_OK : AUD_ERROR_STATE;
   }
   return AUD_ERROR_FAILED;

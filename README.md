@@ -126,8 +126,13 @@ scheduler and before the host's events.
   side: the sample position and its fitted output time, the frames, the
   output latency the stream reported, the longest period between two
   renders since the last reset of the time filter (offline: the longest
-  block), the nominal period and the resets - what a bridge needs for
-  C = P + L + m.
+  block), the nominal period, the resets and a histogram of the periods
+  (100 us bins up to 51.2 ms with an overflow bin, one count per render,
+  reset with the time filter) - what a bridge needs for C = P + L + m.
+  The longest period is a diagnostic, a single gap at start-up ruins it;
+  P is a high percentile (p99.9) of the histogram. The realtime thread
+  counts a bin with a relaxed add, the histogram is read after the
+  snapshot of the other fields.
 
 ## The headless host (ticket 20)
 
@@ -246,7 +251,7 @@ final source = graph.createEventSource(sampler,         // ticket 26: one produc
 source.push(packet.words, hostTimeNs: AudClock.nowNs()); // false when the queue is full
 source.release();                                        // notes off, pedals up
 print(source.stats.latencyP99Ns);                        // percentiles of the histograms
-print(graph.timing.maxPeriodNs);                         // P of C = P + L + m
+print(graph.timing.periodP999Ns);                        // P of C = P + L + m
 source.address;                                          // for a native producer, with
 AudEventSourceFfi.pushFunctionAddress;                   // the push, release and size functions
 source.dispose();                                        // AudSourceDoneNotification follows

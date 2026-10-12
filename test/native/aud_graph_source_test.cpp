@@ -47,6 +47,40 @@ struct SourceFixture {
   }
 };
 
+// The renders the period histogram counts.
+uint64_t periodTotal(const AudGraphTiming& t) {
+  uint64_t total = 0;
+  for (uint32_t i = 0; i <= AUD_GRAPH_PERIOD_BINS; ++i) {
+    total += t.period_histogram[i];
+  }
+  return total;
+}
+
+// The upper edge of the bin at which `fraction` of the renders is reached,
+// as the Dart side computes it; 0 without renders.
+int64_t periodPercentileNs(const AudGraphTiming& t, double fraction) {
+  const uint64_t total = periodTotal(t);
+  if (total == 0) return 0;
+  const double wanted = fraction * static_cast<double>(total);
+  uint64_t seen = 0;
+  for (uint32_t i = 0; i <= AUD_GRAPH_PERIOD_BINS; ++i) {
+    seen += t.period_histogram[i];
+    if (seen > 0 && static_cast<double>(seen) >= wanted) {
+      return static_cast<int64_t>(i + 1) * AUD_GRAPH_PERIOD_BIN_NS;
+    }
+  }
+  return static_cast<int64_t>(AUD_GRAPH_PERIOD_BINS + 1) * AUD_GRAPH_PERIOD_BIN_NS;
+}
+
+// Renders `count` blocks of 256 frames, one every `periodNs` from `from`.
+void renderPaced(TimedStream& stream, std::chrono::steady_clock::time_point from,
+                 int64_t periodNs, uint32_t count) {
+  for (uint32_t i = 1; i <= count; ++i) {
+    std::this_thread::sleep_until(from + std::chrono::nanoseconds(periodNs) * i);
+    stream.render(256);
+  }
+}
+
 }  // namespace
 
 // ############################################################################
@@ -588,12 +622,18 @@ AUD_TEST(graph_timing_reports_the_last_block) {
   AUD_CHECK(t.nominal_period_ns == 5333333);
   AUD_CHECK(t.max_period_ns >= 20000000);
   AUD_CHECK(t.time_filter_resets == 0);
-  // A reset of the filter starts the measure again.
+  // The histogram holds the one gap; the first render counts nothing.
+  AUD_CHECK(periodTotal(t) == 1);
+  AUD_CHECK(periodPercentileNs(t, 0.999) >= 20000000);
+  // A reset of the filter starts the measure again: the gap of the render
+  // that reset it is the first one counted.
   stream.position += 100000;
   stream.render(256);
   t = timingOf(f.graph);
   AUD_CHECK(t.time_filter_resets == 1);
   AUD_CHECK(t.max_period_ns < 20000000);
+  AUD_CHECK(periodTotal(t) == 1);
+  AUD_CHECK(periodPercentileNs(t, 0.999) < 20000000);
   // Offline: the longest block.
   aud_graph_stop(f.graph);
   aud_graph_start(f.graph);
@@ -616,4 +656,73 @@ AUD_TEST(graph_timing_reports_the_last_block) {
   AUD_CHECK(t.flags == (AUD_TIMING_VALID | AUD_TIMING_OFFLINE));
   AUD_CHECK(t.max_period_ns == 20000000);
   AUD_CHECK(t.nominal_period_ns == 21333333);
+  // The histogram holds the block durations: 64, 960, 256, 64 and the
+  // rest of 656 frames - deterministic, so a second run matches.
+  AUD_CHECK(periodTotal(t) == 5);
+  AUD_CHECK(t.period_histogram[13] == 2);   // 1.33 ms
+  AUD_CHECK(t.period_histogram[53] == 1);   // 5.33 ms
+  AUD_CHECK(t.period_histogram[136] == 1);  // 13.67 ms
+  AUD_CHECK(t.period_histogram[200] == 1);  // 20 ms
+  AUD_CHECK(periodPercentileNs(t, 0.5) == 5400000);
+  AUD_CHECK(periodPercentileNs(t, 0.999) == 20100000);
+  aud_graph_stop(f.graph);
+  aud_graph_start(f.graph);
+  AUD_CHECK(aud_graph_render_offline(f.graph, &request) == AUD_OK);
+  const AudGraphTiming again = timingOf(f.graph);
+  AUD_CHECK(std::memcmp(again.period_histogram, t.period_histogram,
+                        sizeof(t.period_histogram)) == 0);
+}
+
+AUD_TEST(graph_timing_histogram_ignores_a_single_gap_at_start_up) {
+  Fixture f;
+  const int32_t osc = f.node(AUD_GRAPH_OSCILLATOR_TYPE_ID);
+  f.commit([&] { f.connect(osc, AUD_GRAPH_NODE); });
+  aud_graph_start(f.graph);
+  TimedStream stream(f);
+  // The stream of an iPhone: a start-up gap of 177 ms, then a callback
+  // every 5.33 ms. The maximum is the gap; p99.9 of 1001 gaps is not.
+  stream.render(256);
+  std::this_thread::sleep_for(std::chrono::milliseconds(177));
+  stream.render(256);
+  renderPaced(stream, std::chrono::steady_clock::now(), 5333333, 1000);
+  const AudGraphTiming t = timingOf(f.graph);
+  AUD_CHECK(t.time_filter_resets == 0);
+  AUD_CHECK(t.max_period_ns >= 177000000);
+  AUD_CHECK(periodTotal(t) == 1001);
+  AUD_CHECK(t.period_histogram[AUD_GRAPH_PERIOD_BINS] == 1);
+  // This host paces with jitter, so the bounds are wide: the median is
+  // the callback, p99.9 stays far below the start-up gap.
+  const int64_t p50 = periodPercentileNs(t, 0.5);
+  AUD_CHECK(p50 >= 4000000 && p50 < 10000000);
+  const int64_t p999 = periodPercentileNs(t, 0.999);
+  AUD_CHECK(p999 >= 5400000 && p999 < 40000000);
+  AUD_CHECK(periodPercentileNs(t, 1.0) > AUD_GRAPH_PERIOD_BINS * AUD_GRAPH_PERIOD_BIN_NS);
+  AUD_CHECK(f.stats().realtime_violations == 0);
+}
+
+AUD_TEST(graph_timing_histogram_takes_the_gap_of_split_callbacks) {
+  Fixture f;
+  const int32_t osc = f.node(AUD_GRAPH_OSCILLATOR_TYPE_ID);
+  f.commit([&] { f.connect(osc, AUD_GRAPH_NODE); });
+  aud_graph_start(f.graph);
+  TimedStream stream(f);
+  // A stream that splits a callback of 10.7 ms into two renders back to
+  // back: half of the gaps are near zero, p99.9 is the callback.
+  const auto from = std::chrono::steady_clock::now();
+  for (uint32_t i = 0; i < 20; ++i) {
+    std::this_thread::sleep_until(from + std::chrono::nanoseconds(10666667) * i);
+    stream.render(256);
+    stream.render(256);
+  }
+  const AudGraphTiming t = timingOf(f.graph);
+  AUD_CHECK(periodTotal(t) == 39);
+  uint64_t belowOneMs = 0;
+  for (uint32_t i = 0; i < 10; ++i) belowOneMs += t.period_histogram[i];
+  AUD_CHECK(belowOneMs == 20);
+  AUD_CHECK(periodPercentileNs(t, 0.5) <= 1000000);
+  // With 39 gaps p99.9 is the longest one; a loaded host overshoots its
+  // sleep by several milliseconds, so only the lower bound is tight.
+  const int64_t p999 = periodPercentileNs(t, 0.999);
+  AUD_CHECK(p999 >= 10700000 && p999 < 40000000);
+  AUD_CHECK(t.max_period_ns >= 10666667);
 }

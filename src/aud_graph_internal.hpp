@@ -655,11 +655,13 @@ struct AudGraph {
   // control thread writes it before the state becomes running again.
   bool closeNotesPending = false;
   // The timing for the control side (ticket 26), realtime thread: the
-  // start of the last render and the longest gap since the reset of the
-  // time filter.
+  // start of the last render, the longest gap since the reset of the time
+  // filter and the histogram of the gaps - relaxed counters any thread
+  // reads, one bin per render.
   int64_t lastRenderStartNs = 0;
   bool lastRenderValid = false;
   int64_t maxPeriodNs = 0;
+  std::atomic<uint64_t> periodHistogram[AUD_GRAPH_PERIOD_BINS + 1]{};
   aud::TimingSnapshot timing;
 
   // Transport, realtime thread, published through atomics.

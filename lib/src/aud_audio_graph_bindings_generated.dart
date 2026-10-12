@@ -700,7 +700,8 @@ external int aud_graph_tap_read(
   int frames,
 );
 
-/// [any thread] A consistent snapshot; AUD_ERROR_STATE before a block ran.
+/// [any thread] A consistent snapshot of the fields before the histogram,
+/// the histogram as it is; AUD_ERROR_STATE before a block ran.
 @ffi.Native<
   ffi.Int32 Function(ffi.Pointer<AudGraph>, ffi.Pointer<AudGraphTiming>)
 >()
@@ -1052,6 +1053,10 @@ const String AUD_GRAPH_MIXER_TYPE_ID = 'aud.graph.mixer';
 const int AUD_GRAPH_NODE = 0;
 
 const String AUD_GRAPH_OSCILLATOR_TYPE_ID = 'aud.graph.oscillator';
+
+const int AUD_GRAPH_PERIOD_BINS = 512;
+
+const int AUD_GRAPH_PERIOD_BIN_NS = 100000;
 
 const int AUD_GRAPH_PREPARED = 1;
 
@@ -1694,10 +1699,10 @@ final class AudGraphTiming extends ffi.Struct {
   @ffi.Uint32()
   external int output_latency_frames;
 
-  /// P: the longest time between the starts of two renders since the last
+  /// The longest time between the starts of two renders since the last
   /// reset of the time filter, measured on the realtime thread; offline the
-  /// longest block since the reset. A stream may split one callback into
-  /// several renders; the longest gap is what counts.
+  /// longest block since the reset. A diagnostic: one gap at start-up
+  /// ruins it, so a bridge takes P from the histogram below.
   @ffi.Int64()
   external int max_period_ns;
 
@@ -1711,31 +1716,15 @@ final class AudGraphTiming extends ffi.Struct {
   @ffi.Uint32()
   external int reserved;
 
-  static ffi.Pointer<AudGraphTiming> $allocate(
-    ffi.Allocator $allocator, {
-    required int struct_size,
-    required int flags,
-    required double sample_rate,
-    required int sample_position,
-    required int host_time_ns,
-    required int frames,
-    required int output_latency_frames,
-    required int max_period_ns,
-    required int nominal_period_ns,
-    required int time_filter_resets,
-    required int reserved,
-  }) => $allocator<AudGraphTiming>()
-    ..ref.struct_size = struct_size
-    ..ref.flags = flags
-    ..ref.sample_rate = sample_rate
-    ..ref.sample_position = sample_position
-    ..ref.host_time_ns = host_time_ns
-    ..ref.frames = frames
-    ..ref.output_latency_frames = output_latency_frames
-    ..ref.max_period_ns = max_period_ns
-    ..ref.nominal_period_ns = nominal_period_ns
-    ..ref.time_filter_resets = time_filter_resets
-    ..ref.reserved = reserved;
+  /// P: the times between the starts of two renders since the last reset
+  /// of the time filter, each render in one bin of AUD_GRAPH_PERIOD_BIN_NS
+  /// (offline: the block durations, so that offline stays deterministic).
+  /// A stream may split one callback into several renders; a high
+  /// percentile (p99.9) of the gaps is what a bridge takes as P. The bins
+  /// are relaxed counters, read after the snapshot: exact each on its own,
+  /// not consistent with the fields above.
+  @ffi.Array.multi([513])
+  external ffi.Array<ffi.Uint64> period_histogram;
 }
 
 /// The transport as the realtime thread last saw it.

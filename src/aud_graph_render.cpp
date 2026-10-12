@@ -414,6 +414,16 @@ void adoptPending(AudGraph* graph) {
 
 double nsPerSample(const AudGraph* graph) { return 1e9 / graph->sampleRate; }
 
+// Starts the measure of the period anew (ticket 26): the longest gap and
+// the histogram of the gaps. Relaxed stores, so the realtime thread may
+// call it on a reset of the time filter.
+void resetPeriod(AudGraph* graph) {
+  graph->maxPeriodNs = 0;
+  for (auto& bin : graph->periodHistogram) {
+    bin.store(0, std::memory_order_relaxed);
+  }
+}
+
 void computeStreamTime(AudGraph* graph, const AudRenderRequest* request) {
   AudStreamTime time{};
   if (request->time != nullptr &&
@@ -446,8 +456,8 @@ void computeStreamTime(AudGraph* graph, const AudRenderRequest* request) {
     if (aud_time_filter_add(&graph->filter, time.sample_position, time.frames,
                             time.host_time_ns)) {
       graph->filterResets.fetch_add(1, std::memory_order_relaxed);
-      // The longest period is measured anew after a reset (ticket 26).
-      graph->maxPeriodNs = 0;
+      // The period is measured anew after a reset (ticket 26).
+      resetPeriod(graph);
       AudGraphNotification n = makeNotification(graph, AUD_NOTIFY_TIME_RESET);
       n.count = 1;
       n.sample_position = time.sample_position;
@@ -1937,7 +1947,7 @@ void resetTime(AudGraph* graph) {
   aud_time_filter_reset(&graph->filter);
   graph->synthesizedValid = false;
   graph->lastRenderValid = false;
-  graph->maxPeriodNs = 0;
+  resetPeriod(graph);
 }
 
 int64_t beatNow(AudGraph* graph) {
@@ -2182,19 +2192,33 @@ void wakeListener(AudGraph* graph) {
 }
 
 // Measures the gap since the previous render for the timing of the control
-// side (ticket 26): live, the longest gap between two render starts since
-// the last reset of the time filter; offline, the longest block.
+// side (ticket 26): live, the gap between two render starts, so the first
+// render of a stream counts nothing; offline, the block.
+// The longest gap and one bin of the histogram, a relaxed add: O(1), no
+// lock, since the control side reads the bins while the block renders.
 void measurePeriod(AudGraph* graph, int64_t start, uint32_t frames) {
   int64_t period = 0;
+  bool measured = false;
   if (graph->offline) {
     period = static_cast<int64_t>(
         std::llround(static_cast<double>(frames) * nsPerSample(graph)));
+    measured = true;
   } else if (graph->lastRenderValid) {
     period = start - graph->lastRenderStartNs;
+    measured = true;
   }
   graph->lastRenderStartNs = start;
   graph->lastRenderValid = true;
+  if (!measured) return;
   graph->maxPeriodNs = std::max(graph->maxPeriodNs, period);
+  uint32_t bin = AUD_GRAPH_PERIOD_BINS;
+  if (period < 0) {
+    bin = 0;
+  } else {
+    const int64_t index = period / AUD_GRAPH_PERIOD_BIN_NS;
+    if (index < AUD_GRAPH_PERIOD_BINS) bin = static_cast<uint32_t>(index);
+  }
+  graph->periodHistogram[bin].fetch_add(1, std::memory_order_relaxed);
 }
 
 // Publishes the timing of the block under the seqlock.

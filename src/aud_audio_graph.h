@@ -672,6 +672,12 @@ enum {
   AUD_TIMING_OFFLINE = 1 << 1,  // the last block rendered offline
 };
 
+// The histogram of AudGraphTiming: the time between the starts of two
+// renders in bins of 100 us up to 51.2 ms; the last bin counts what lies
+// beyond.
+#define AUD_GRAPH_PERIOD_BIN_NS 100000
+#define AUD_GRAPH_PERIOD_BINS 512
+
 // The timing as the last block saw it, for the control side: what a
 // bridge needs to choose C = P + L + m of midi-003.
 typedef struct AudGraphTiming {
@@ -683,17 +689,26 @@ typedef struct AudGraphTiming {
   uint32_t frames;          // of the last block
   // The output latency the stream reported with the last block.
   uint32_t output_latency_frames;
-  // P: the longest time between the starts of two renders since the last
+  // The longest time between the starts of two renders since the last
   // reset of the time filter, measured on the realtime thread; offline the
-  // longest block since the reset. A stream may split one callback into
-  // several renders; the longest gap is what counts.
+  // longest block since the reset. A diagnostic: one gap at start-up
+  // ruins it, so a bridge takes P from the histogram below.
   int64_t max_period_ns;
   int64_t nominal_period_ns;  // the prepared largest block over the rate
   uint32_t time_filter_resets;
   uint32_t reserved;
+  // P: the times between the starts of two renders since the last reset
+  // of the time filter, each render in one bin of AUD_GRAPH_PERIOD_BIN_NS
+  // (offline: the block durations, so that offline stays deterministic).
+  // A stream may split one callback into several renders; a high
+  // percentile (p99.9) of the gaps is what a bridge takes as P. The bins
+  // are relaxed counters, read after the snapshot: exact each on its own,
+  // not consistent with the fields above.
+  uint64_t period_histogram[AUD_GRAPH_PERIOD_BINS + 1];
 } AudGraphTiming;
 
-// [any thread] A consistent snapshot; AUD_ERROR_STATE before a block ran.
+// [any thread] A consistent snapshot of the fields before the histogram,
+// the histogram as it is; AUD_ERROR_STATE before a block ran.
 AUD_EXPORT int32_t aud_graph_timing(const AudGraph* graph,
                                     AudGraphTiming* timing);
 

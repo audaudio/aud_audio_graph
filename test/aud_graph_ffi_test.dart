@@ -138,6 +138,8 @@ void main() {
         expect(timing.valid, isTrue);
         expect(timing.offline, isTrue);
         expect(timing.samplePosition + timing.frames, 256);
+        expect(timing.periodHistogram, hasLength(513));
+        expect(timing.periodP999Ns, isNotNull);
       });
     });
 

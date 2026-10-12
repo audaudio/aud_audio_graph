@@ -448,6 +448,14 @@ void main() {
       expect(timing.timeFilterResets, 0);
       expect(timing.hostTimeAt(600), atFrame(600));
       expect(timing.sampleAt(atFrame(600)), 600);
+      // The histogram holds the three blocks: 256, 128 and 216 frames.
+      expect(timing.periodHistogram, hasLength(513));
+      expect(timing.periodHistogram[53], 1);
+      expect(timing.periodHistogram[26], 1);
+      expect(timing.periodHistogram[45], 1);
+      expect(timing.periodMedianNs, 4600000);
+      expect(timing.periodP999Ns, 5400000);
+      expect(timing.toJson()['periodP999Ns'], 5400000);
     });
   });
 }

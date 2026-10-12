@@ -256,9 +256,16 @@ void main() {
         ..output_latency_frames = 441
         ..max_period_ns = 9
         ..nominal_period_ns = 8
-        ..time_filter_resets = 2;
+        ..time_filter_resets = 2
+        ..period_histogram[53] = 4
+        ..period_histogram[512] = 1;
       final read = timing.ref.toDart();
       calloc.free(timing);
+      expect(read.periodHistogram, hasLength(513));
+      expect(read.periodHistogram[53], 4);
+      expect(read.periodHistogram.last, 1);
+      expect(read.periodMedianNs, 5400000);
+      expect(read.periodP999Ns, 513 * 100000);
       expect(read.valid, isTrue);
       expect(read.offline, isTrue);
       expect(read.sampleRate, 44100);
