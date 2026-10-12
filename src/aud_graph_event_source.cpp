@@ -315,10 +315,12 @@ AUD_EXPORT int32_t aud_graph_timing(const AudGraph* graph,
   const TimingSnapshot& t = graph->timing;
   // A seqlock: the generation is odd while the realtime thread writes.
   // The realtime thread writes once per block, so a few attempts are
-  // enough; the last one is taken as it is.
-  for (uint32_t attempt = 0; attempt < kTapReadAttempts; ++attempt) {
+  // enough; the last one is taken as it is - its fields are atomics, each
+  // of the last block or the one before.
+  for (uint32_t attempt = 0;; ++attempt) {
+    const bool last = attempt + 1 >= kTapReadAttempts;
     const uint32_t before = t.generation.load(std::memory_order_acquire);
-    if (before & 1) continue;
+    if ((before & 1) && !last) continue;
     timing->flags = t.flags.load(std::memory_order_relaxed);
     timing->sample_rate = t.sampleRate.load(std::memory_order_relaxed);
     timing->sample_position = t.samplePosition.load(std::memory_order_relaxed);
@@ -332,7 +334,9 @@ AUD_EXPORT int32_t aud_graph_timing(const AudGraph* graph,
         t.timeFilterResets.load(std::memory_order_relaxed);
     timing->reserved = 0;
     std::atomic_thread_fence(std::memory_order_acquire);
-    if (t.generation.load(std::memory_order_acquire) != before) continue;
+    if (t.generation.load(std::memory_order_acquire) != before && !last) {
+      continue;
+    }
     // The histogram after the snapshot: relaxed counters, each exact on
     // its own, so no attempt is spent on it.
     for (uint32_t i = 0; i <= AUD_GRAPH_PERIOD_BINS; ++i) {
@@ -341,5 +345,4 @@ AUD_EXPORT int32_t aud_graph_timing(const AudGraph* graph,
     }
     return (timing->flags & AUD_TIMING_VALID) ? AUD_OK : AUD_ERROR_STATE;
   }
-  return AUD_ERROR_FAILED;
 }

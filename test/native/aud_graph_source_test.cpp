@@ -191,6 +191,54 @@ AUD_TEST(source_destroy_waits_for_the_audio_thread) {
   makeSource(s.f, s.recorder);
 }
 
+AUD_TEST(source_slot_is_free_before_the_source_is_let_go) {
+  // The audio thread clears the slot of a retired source before it lets
+  // go of it: the control thread, which frees the source then, creates
+  // the next one into the same slot at once - the allocator may give it
+  // the same address - and that one must be drained, not cleared by a
+  // late clearing of the slot.
+  SourceFixture s;
+  std::atomic<bool> stop{false};
+  std::thread stream([&] {
+    while (!stop.load(std::memory_order_acquire)) {
+      s.f.render(256);
+      std::this_thread::yield();
+    }
+  });
+  uint32_t delivered = 0;
+  uint32_t announced = 0;
+  for (uint32_t round = 0; round < 200; ++round) {
+    AudEventSource* source = makeSource(s.f, s.recorder, AUD_SOURCE_TIMING_IMMEDIATE);
+    AUD_CHECK(source != nullptr);
+    if (source == nullptr) break;
+    AUD_CHECK(pushWord(source, aud_ump_midi1_word(0, 0x90, 60, 100)) == AUD_OK);
+    AUD_CHECK(pushWord(source, aud_ump_midi1_word(0, 0x80, 60, 64)) == AUD_OK);
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (sourceStats(source).delivered < 2 &&
+           std::chrono::steady_clock::now() < until) {
+      std::this_thread::yield();
+    }
+    delivered += sourceStats(source).delivered == 2 ? 1 : 0;
+    AUD_CHECK(aud_graph_destroy_event_source(s.f.graph, source) == AUD_OK);
+    // The take of the notification frees the source once it is let go.
+    bool gone = false;
+    while (!gone && std::chrono::steady_clock::now() < until) {
+      for (const AudGraphNotification& n : s.f.takeAll()) {
+        if (n.type == AUD_NOTIFY_SOURCE_DONE) gone = true;
+      }
+      if (!gone) std::this_thread::yield();
+    }
+    announced += gone ? 1 : 0;
+  }
+  stop.store(true, std::memory_order_release);
+  stream.join();
+  AUD_CHECK(delivered == 200);
+  AUD_CHECK(announced == 200);
+  AUD_CHECK(g_records.size() == 400);
+  AUD_CHECK(s.f.stats().events_dropped == 0);
+  AUD_CHECK(s.f.stats().realtime_violations == 0);
+}
+
 // ############################################################################
 // The drain
 
@@ -455,6 +503,99 @@ AUD_TEST(source_release_waits_for_room_in_the_block) {
   AUD_CHECK(s.f.stats().events_dropped == 0);
 }
 
+AUD_TEST(source_releases_of_several_sources_carry_over_the_full_table) {
+  // Three sources on three targets, each with 250 held notes and the
+  // sustain and soft pedal on every group and channel, released in the
+  // same block, with queues of controllers that fill the table of
+  // 3 * 1024 + 768 at the moment the third source's notes close: every
+  // note off and every pedal off arrives, in this block or the next.
+  // Three fills, so that the room runs out before the notes, among the
+  // notes and among the pedals of the third source.
+  Fixture f;
+  int32_t recorders[3];
+  AudEventSource* sources[3];
+  for (int32_t& recorder : recorders) recorder = f.node("aud.test.recorder");
+  f.commit([&] {
+    for (const int32_t recorder : recorders) f.connect(recorder, AUD_GRAPH_NODE);
+  });
+  aud_graph_start(f.graph);
+  for (uint32_t i = 0; i < 3; ++i) {
+    sources[i] = makeSource(f, recorders[i], AUD_SOURCE_TIMING_IMMEDIATE);
+  }
+  constexpr uint32_t kTable = 3 * 1024 + 256 + 512;
+  constexpr uint32_t kNotes = 250;
+  constexpr uint32_t kPedals = 512;
+  constexpr uint32_t kFill = 900;
+  const uint32_t shorts[] = {0, 100, kNotes + 100};
+  for (const uint32_t shortBy : shorts) {
+    for (AudEventSource* source : sources) {
+      for (uint32_t i = 0; i < kNotes; ++i) {
+        AUD_CHECK(pushWord(source, aud_ump_midi1_word(0, 0x90 | (i / 125), i % 125,
+                                                      100)) == AUD_OK);
+      }
+      for (uint32_t group = 0; group < 16; ++group) {
+        for (uint32_t channel = 0; channel < 16; ++channel) {
+          AUD_CHECK(pushWord(source, ccWord(64, 127, channel, group)) == AUD_OK);
+          AUD_CHECK(pushWord(source, ccWord(66, 127, channel, group)) == AUD_OK);
+        }
+      }
+    }
+    g_records.clear();
+    for (int i = 0; i < 3; ++i) f.render(256);
+    AUD_CHECK(g_records.size() == 3 * (kNotes + kPedals));
+    // The fills: the first two sources release in full, the third one's
+    // flush ends where the table ends, less `shortBy` events.
+    const uint32_t fills[] = {kFill, kFill,
+                              kTable - 2 * (kFill + kNotes + kPedals) - shortBy};
+    for (uint32_t i = 0; i < 3; ++i) {
+      for (uint32_t n = 0; n < fills[i]; ++n) {
+        AUD_CHECK(pushWord(sources[i], ccWord(7, 1)) == AUD_OK);
+      }
+      aud_event_source_release(sources[i]);
+    }
+    g_records.clear();
+    f.render(256);
+    AUD_CHECK(g_records.size() == kTable);
+    AUD_CHECK(sourceStats(sources[0]).releases == 1);
+    AUD_CHECK(sourceStats(sources[1]).releases == 1);
+    AUD_CHECK(sourceStats(sources[2]).releases == 0);
+    f.render(256);
+    AUD_CHECK(sourceStats(sources[2]).releases == 1);
+    uint32_t noteOffs = 0;
+    uint32_t pedalOffs = 0;
+    uint32_t controllers = 0;
+    for (const Record& r : g_records) {
+      if (isNoteOff(r)) noteOffs += 1;
+      if (isControl(r, 64, 0) || isControl(r, 66, 0)) pedalOffs += 1;
+      if (isControl(r, 7, 1)) controllers += 1;
+    }
+    AUD_CHECK(noteOffs == 3 * kNotes);
+    AUD_CHECK(pedalOffs == 3 * kPedals);
+    AUD_CHECK(controllers == fills[0] + fills[1] + fills[2]);
+    AUD_CHECK(g_records.size() == noteOffs + pedalOffs + controllers);
+    AUD_CHECK(f.stats().events_dropped == 0);
+    // Nothing is left for a further release.
+    g_records.clear();
+    f.render(256);
+    AUD_CHECK(g_records.empty());
+    for (AudEventSource* source : sources) aud_event_source_release(source);
+    f.render(256);
+    AUD_CHECK(g_records.empty());
+    for (AudEventSource* source : sources) {
+      AUD_CHECK(sourceStats(source).releases == 2);
+    }
+    for (AudEventSource* source : sources) {
+      AUD_CHECK(aud_graph_destroy_event_source(f.graph, source) == AUD_OK);
+    }
+    f.render(256);
+    f.takeAll();
+    for (uint32_t i = 0; i < 3; ++i) {
+      sources[i] = makeSource(f, recorders[i], AUD_SOURCE_TIMING_IMMEDIATE);
+    }
+  }
+  AUD_CHECK(f.stats().realtime_violations == 0);
+}
+
 // ############################################################################
 // Retirement of the target
 
@@ -536,6 +677,48 @@ AUD_TEST(retiring_emitters_keep_their_routes_to_living_nodes) {
   });
   f.render(256);
   AUD_CHECK(g_records.size() == 1);  // the recorder's own closing only
+}
+
+AUD_TEST(a_route_the_transaction_disconnected_does_not_survive_the_emitter) {
+  Fixture f;
+  const int32_t emitter = f.node("aud.test.emitter");
+  const int32_t recorder = f.node("aud.test.recorder");
+  f.commit([&] {
+    f.connect(recorder, AUD_GRAPH_NODE);
+    aud_graph_connect_events(f.graph, emitter, 0, recorder, 0);
+    aud_graph_connect_events(f.graph, emitter, 0, AUD_GRAPH_NODE, 0);
+  });
+  aud_graph_start(f.graph);
+  const AudEvent on = noteOn(60);
+  aud_graph_send_event(f.graph, emitter, &on, nullptr, 0);
+  f.render(256);
+  AUD_CHECK(g_records.size() == 1);
+  f.takeAll();
+  // The transaction disconnects the emitter from the recorder and removes
+  // it: only the route its removal dropped - to the graph's event input -
+  // stays while it closes its notes; the recorder gets nothing.
+  f.commit([&] {
+    AUD_CHECK(aud_graph_disconnect_events(f.graph, emitter, 0, recorder, 0) == AUD_OK);
+    aud_graph_remove_node(f.graph, emitter);
+  });
+  for (int i = 0; i < 4; ++i) f.render(256);
+  AUD_CHECK(g_records.size() == 1);
+  uint32_t forwarded = 0;
+  uint32_t done = 0;
+  for (const AudGraphNotification& n : f.takeAll()) {
+    if (n.type == AUD_NOTIFY_EVENT && n.node == emitter) forwarded += 1;
+    if (n.type == AUD_NOTIFY_NODE_DONE) done += 1;
+  }
+  AUD_CHECK(forwarded == 1 && done == 1);
+  // A rolled back removal drops no route: the emitter plays on.
+  const int32_t second = f.node("aud.test.emitter");
+  f.commit([&] { aud_graph_connect_events(f.graph, second, 0, recorder, 0); });
+  aud_graph_begin(f.graph);
+  aud_graph_remove_node(f.graph, second);
+  aud_graph_rollback(f.graph);
+  aud_graph_send_event(f.graph, second, &on, nullptr, 0);
+  f.render(256);
+  AUD_CHECK(g_records.size() == 2);
 }
 
 // ############################################################################
@@ -625,13 +808,19 @@ AUD_TEST(graph_timing_reports_the_last_block) {
   // The histogram holds the one gap; the first render counts nothing.
   AUD_CHECK(periodTotal(t) == 1);
   AUD_CHECK(periodPercentileNs(t, 0.999) >= 20000000);
-  // A reset of the filter starts the measure again: the gap of the render
-  // that reset it is the first one counted.
+  // A reset of the filter starts the measure again: the render that reset
+  // it counts nothing, like the first render of a stream; the next one is
+  // the first gap counted.
   stream.position += 100000;
   stream.render(256);
   t = timingOf(f.graph);
   AUD_CHECK(t.time_filter_resets == 1);
-  AUD_CHECK(t.max_period_ns < 20000000);
+  AUD_CHECK(t.max_period_ns == 0);
+  AUD_CHECK(periodTotal(t) == 0);
+  AUD_CHECK(periodPercentileNs(t, 0.999) == 0);
+  stream.render(256);
+  t = timingOf(f.graph);
+  AUD_CHECK(t.time_filter_resets == 1);
   AUD_CHECK(periodTotal(t) == 1);
   AUD_CHECK(periodPercentileNs(t, 0.999) < 20000000);
   // Offline: the longest block.
@@ -698,6 +887,35 @@ AUD_TEST(graph_timing_histogram_ignores_a_single_gap_at_start_up) {
   AUD_CHECK(p999 >= 5400000 && p999 < 40000000);
   AUD_CHECK(periodPercentileNs(t, 1.0) > AUD_GRAPH_PERIOD_BINS * AUD_GRAPH_PERIOD_BIN_NS);
   AUD_CHECK(f.stats().realtime_violations == 0);
+}
+
+AUD_TEST(graph_timing_histogram_drops_the_gap_that_reset_the_filter) {
+  Fixture f;
+  const int32_t osc = f.node(AUD_GRAPH_OSCILLATOR_TYPE_ID);
+  f.commit([&] { f.connect(osc, AUD_GRAPH_NODE); });
+  aud_graph_start(f.graph);
+  TimedStream stream(f);
+  // A route change on an iPhone: the stream pauses for 60 ms and comes
+  // back with a jump of its sample position against its host time, so
+  // the time filter resets. The gap that reset it is no sample of the
+  // new measure - the histogram counts the renders after the reset only,
+  // none of them in the overflow bin, so p99.9 is the callback again and
+  // not the edge of the histogram.
+  renderPaced(stream, std::chrono::steady_clock::now(), 5333333, 20);
+  std::this_thread::sleep_for(std::chrono::milliseconds(60));
+  stream.position += 100000;
+  stream.render(256);
+  AudGraphTiming t = timingOf(f.graph);
+  AUD_CHECK(t.time_filter_resets == 1);
+  AUD_CHECK(periodTotal(t) == 0);
+  AUD_CHECK(t.max_period_ns == 0);
+  renderPaced(stream, std::chrono::steady_clock::now(), 5333333, 20);
+  t = timingOf(f.graph);
+  AUD_CHECK(t.time_filter_resets == 1);
+  AUD_CHECK(periodTotal(t) == 20);
+  AUD_CHECK(t.period_histogram[AUD_GRAPH_PERIOD_BINS] == 0);
+  AUD_CHECK(t.max_period_ns < 50000000);
+  AUD_CHECK(periodPercentileNs(t, 0.999) < 50000000);
 }
 
 AUD_TEST(graph_timing_histogram_takes_the_gap_of_split_callbacks) {

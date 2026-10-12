@@ -1141,7 +1141,8 @@ AUD_EXPORT AudGraph* aud_graph_create(const AudGraphConfig* config) {
   graph->popped.resize(c.max_events_per_block);
   // The block's events: a budget of queued events, a budget of scheduled
   // ones, a budget of the event sources, the note offs of one full tracker
-  // and the pedal offs of a release (ticket 26).
+  // and the pedal offs of one release (ticket 26); what more a block's
+  // releases need carries over to the next block.
   graph->blockEvents.resize(3 * c.max_events_per_block + NoteTracker::kCapacity +
                             kMaxPedalOffs);
   graph->emitted.resize(c.max_events_per_block);
@@ -1468,6 +1469,7 @@ AUD_EXPORT int32_t aud_graph_begin(AudGraph* graph) {
   collect(graph);
   graph->working = graph->topology;
   graph->workingRemoved.clear();
+  graph->workingDroppedEvents.clear();
   graph->transactionOpen = true;
   return AUD_OK;
 }
@@ -1560,9 +1562,13 @@ AUD_EXPORT int32_t aud_graph_remove_node(AudGraph* graph, int32_t node) {
                              }),
               audio.end());
   auto& events = graph->working.events;
+  auto& dropped = graph->workingDroppedEvents;
   events.erase(std::remove_if(events.begin(), events.end(),
-                              [node](const EventEdgeId& id) {
-                                return id.from == node || id.to == node;
+                              [node, &dropped](const EventEdgeId& id) {
+                                const bool drop =
+                                    id.from == node || id.to == node;
+                                if (drop) dropped.push_back(id);
+                                return drop;
                               }),
                events.end());
   return AUD_OK;
@@ -1588,12 +1594,13 @@ AUD_EXPORT int32_t aud_graph_commit(AudGraph* graph) {
     retiring.push_back(instance);
   }
   for (int32_t handle : dropped) dropInstance(graph, handle);
-  // A retiring emitter keeps its event routes to the nodes that stay, as
-  // its audio edges stay, until it is done: the note offs it forwards
-  // while its notes close still arrive (ticket 26).
+  // A retiring emitter keeps the event routes to the nodes that stay
+  // which its removal dropped, as its audio edges stay, until it is done:
+  // the note offs it forwards while its notes close still arrive (ticket
+  // 26). A route the transaction disconnected is gone.
   std::vector<EventEdgeId> zombies;
   for (NodeInstance* instance : retiring) {
-    for (const EventEdgeId& id : graph->topology.events) {
+    for (const EventEdgeId& id : graph->workingDroppedEvents) {
       if (id.from != instance->handle || id.to == instance->handle) continue;
       const auto& removed = graph->workingRemoved;
       if (std::find(removed.begin(), removed.end(), id.to) != removed.end()) {
@@ -1614,6 +1621,7 @@ AUD_EXPORT int32_t aud_graph_commit(AudGraph* graph) {
   }
   graph->topology = graph->working;
   graph->workingRemoved.clear();
+  graph->workingDroppedEvents.clear();
   graph->transactionOpen = false;
   // What a removed node still loads is heard nowhere (ticket 25).
   for (NodeInstance* instance : retiring) {
@@ -1628,6 +1636,7 @@ AUD_EXPORT int32_t aud_graph_rollback(AudGraph* graph) {
   if (!graph->transactionOpen) return AUD_ERROR_STATE;
   graph->transactionOpen = false;
   graph->workingRemoved.clear();
+  graph->workingDroppedEvents.clear();
   return AUD_OK;
 }
 

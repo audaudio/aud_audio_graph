@@ -594,6 +594,10 @@ struct AudGraph {
   aud::Topology topology;
   aud::Topology working;
   std::vector<int32_t> workingRemoved;
+  // The event connections the removals of the open transaction dropped:
+  // only these become routes of a retiring emitter, one the transaction
+  // disconnected itself does not (ticket 26).
+  std::vector<aud::EventEdgeId> workingDroppedEvents;
   bool transactionOpen = false;
   uint32_t nextRevision = 1;
   uint32_t outputLatency = 0;

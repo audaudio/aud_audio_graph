@@ -25,7 +25,14 @@
 - Add a histogram of the render periods to the timing
 
 - AudGraphTiming carries the gaps between two renders in bins of 100 µs since the last reset of the time filter; offline the block durations
+
 - periodPercentileNs, periodMedianNs, periodP99Ns, periodP999Ns: P of midi-003 without the outliers that the longest gap keeps
+
+- Add the review fixes of the event sources and the timing
+
+- The gap that resets the time filter no longer enters the period histogram
+- A retired source frees its slot before it is let go; releases carry over a full block table
+- Zombie routes skip edges the transaction disconnected; the timing takes its last read
 
 ## 0.5.0 - 2026-10-12
 

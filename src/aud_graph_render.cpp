@@ -210,6 +210,11 @@ uint32_t rankOf(const AudEvent& event, const NodeInstance* instance) {
   return 1;
 }
 
+// Whether the block's event table takes another event.
+bool blockHasRoom(const AudGraph* graph) {
+  return graph->numBlockEvents < graph->blockEvents.size();
+}
+
 bool addBlockEvent(AudGraph* graph, uint32_t node, const AudEvent& event,
                    uint32_t offset, uint64_t sequence) {
   if (graph->numBlockEvents >= graph->blockEvents.size()) {
@@ -312,9 +317,21 @@ bool trackNote(AudGraph* graph, NodeInstance* instance, const AudEvent& event) {
   return true;
 }
 
-// Closes every running note of a node with a note off at the block start.
-void closeNotes(AudGraph* graph, NodeInstance* instance, uint32_t node) {
+// Closes the running notes of a node with note offs at the block start.
+// Bounded, it stops at a full table and keeps the notes still open for
+// the next block, as a release of a source needs (ticket 26); otherwise
+// every note goes, a note off that finds no room is dropped and counted.
+// True once every note is closed.
+bool closeNotes(AudGraph* graph, NodeInstance* instance, uint32_t node,
+                bool bounded = false) {
   for (uint32_t i = 0; i < instance->notes.count; ++i) {
+    if (bounded && !blockHasRoom(graph)) {
+      NoteTracker& notes = instance->notes;
+      std::memmove(notes.notes, notes.notes + i,
+                   sizeof(uint32_t) * (notes.count - i));
+      notes.count -= i;
+      return false;
+    }
     const uint32_t key = instance->notes.notes[i];
     const uint32_t type = key >> 28;
     const uint32_t group = (key >> 24) & 0xf;
@@ -333,6 +350,7 @@ void closeNotes(AudGraph* graph, NodeInstance* instance, uint32_t node) {
     addBlockEvent(graph, node, event, 0, 0);
   }
   instance->notes.count = 0;
+  return true;
 }
 
 // ............................................................................
@@ -415,10 +433,13 @@ void adoptPending(AudGraph* graph) {
 double nsPerSample(const AudGraph* graph) { return 1e9 / graph->sampleRate; }
 
 // Starts the measure of the period anew (ticket 26): the longest gap and
-// the histogram of the gaps. Relaxed stores, so the realtime thread may
-// call it on a reset of the time filter.
+// the histogram of the gaps, and the previous render start, so that the
+// gap of the render that resets - the discontinuity of a reset of the time
+// filter, often - is no sample of the new measure. Relaxed stores, so the
+// realtime thread may call it on a reset of the time filter.
 void resetPeriod(AudGraph* graph) {
   graph->maxPeriodNs = 0;
+  graph->lastRenderValid = false;
   for (auto& bin : graph->periodHistogram) {
     bin.store(0, std::memory_order_relaxed);
   }
@@ -963,11 +984,6 @@ void popScheduled(AudGraph* graph) {
 // ............................................................................
 // The event sources (interop-003, midi-003, ticket 26)
 
-// Whether the block's event table takes another event.
-bool blockHasRoom(const AudGraph* graph) {
-  return graph->numBlockEvents < graph->blockEvents.size();
-}
-
 // The event of a packet of a source.
 AudEvent sourceEvent(const SourceEvent& packet, uint32_t port, uint32_t flags) {
   AudEvent event = aud_event_ump(packet.words, packet.numWords, 0, port);
@@ -1080,51 +1096,61 @@ bool flushSource(AudGraph* graph, AudEventSource* source, bool accepts) {
 }
 
 // Lifts the pedals the source delivered: CC64 = 0 and CC66 = 0 on every
-// group and channel that saw one, as MIDI 1.0 control changes.
-void liftPedals(AudGraph* graph, AudEventSource* source) {
+// group and channel that saw one, as MIDI 1.0 control changes, as far as
+// the block's table has room; a pedal that found none stays noted for the
+// next block. True once every pedal is lifted.
+bool liftPedals(AudGraph* graph, AudEventSource* source) {
   const uint32_t node = source->target->rtIndex;
   for (uint32_t group = 0; group < 16; ++group) {
     for (uint32_t channel = 0; channel < 16; ++channel) {
       const uint16_t bit = uint16_t(1u << channel);
       if (source->sustain[group] & bit) {
+        if (!blockHasRoom(graph)) return false;
         const uint32_t word =
             aud_ump_midi1_word(group, 0xB0 | channel, 64, 0);
         addBlockEvent(graph, node, aud_event_ump(&word, 1, 0, source->port), 0,
                       graph->sourceSequence++);
+        source->sustain[group] &= uint16_t(~bit);
       }
       if (source->soft[group] & bit) {
+        if (!blockHasRoom(graph)) return false;
         const uint32_t word =
             aud_ump_midi1_word(group, 0xB0 | channel, 66, 0);
         addBlockEvent(graph, node, aud_event_ump(&word, 1, 0, source->port), 0,
                       graph->sourceSequence++);
+        source->soft[group] &= uint16_t(~bit);
       }
     }
-    source->sustain[group] = 0;
-    source->soft[group] = 0;
   }
+  return true;
 }
 
 // The target retired in this block: the adoption closed its notes, the
-// pedals the source delivered lift with them, once; the node still runs
-// its fade and forwards what it gets.
+// pedals the source delivered lift with them, once - over several blocks
+// when the table is full; the node still runs its fade and forwards what
+// it gets.
 void releaseRetiredTarget(AudGraph* graph, AudEventSource* source) {
   const NodeInstance* target = source->target;
   if (source->targetReleased || graph->current == nullptr ||
       target->rtIndex == UINT32_MAX || !target->rtRetired || target->rtDone) {
     return;
   }
+  if (!liftPedals(graph, source)) return;
   source->targetReleased = true;
-  liftPedals(graph, source);
   source->releases.fetch_add(1, std::memory_order_relaxed);
 }
 
 // Carries out a release: the queue empties, then the target's notes close
-// and its pedals lift. True once it is complete.
+// and its pedals lift, each as far as the block's table has room - the
+// table takes the release of one source after full budgets, several
+// sources in one block carry the rest over. True once it is complete.
 bool releaseSource(AudGraph* graph, AudEventSource* source, bool accepts) {
   if (!flushSource(graph, source, accepts)) return false;
   if (accepts) {
-    closeNotes(graph, source->target, source->target->rtIndex);
-    liftPedals(graph, source);
+    if (!closeNotes(graph, source->target, source->target->rtIndex, true)) {
+      return false;
+    }
+    if (!liftPedals(graph, source)) return false;
   } else {
     for (uint32_t group = 0; group < 16; ++group) {
       source->sustain[group] = 0;
@@ -1196,10 +1222,13 @@ void drainSources(AudGraph* graph) {
       n.node = source->node;
       n.value = static_cast<int64_t>(reinterpret_cast<intptr_t>(source));
       notify(graph, n);
-      source->done.store(true, std::memory_order_release);
+      // The slot clears before `done` is stored: the control thread frees
+      // the source on `done` and may create the next one into the same
+      // slot at once, so the slot must be no one's by then.
       AudEventSource* expected = source;
       slot.compare_exchange_strong(expected, nullptr,
                                    std::memory_order_acq_rel);
+      source->done.store(true, std::memory_order_release);
       continue;
     }
     if (source->releaseRequested.exchange(false, std::memory_order_acq_rel)) {
@@ -1946,7 +1975,6 @@ void prepareRealtime(AudGraph* graph) {
 void resetTime(AudGraph* graph) {
   aud_time_filter_reset(&graph->filter);
   graph->synthesizedValid = false;
-  graph->lastRenderValid = false;
   resetPeriod(graph);
 }
 
