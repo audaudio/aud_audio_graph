@@ -51,8 +51,7 @@ void freeSource(AudGraph* graph, AudEventSource* source) {
 
 }  // namespace
 
-bool collectSources(AudGraph* graph) {
-  bool freed = false;
+void collectSources(AudGraph* graph) {
   // A source retired while the graph does not run gets no block that lets
   // go of it: it goes here, once no render is in flight.
   const bool idle =
@@ -68,12 +67,10 @@ bool collectSources(AudGraph* graph) {
     }
     if (letGo(source) || retiredIdle) {
       freeSource(graph, source);
-      freed = true;
     } else {
       i += 1;
     }
   }
-  return freed;
 }
 
 void destroySources(AudGraph* graph) {

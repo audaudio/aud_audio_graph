@@ -24,5 +24,6 @@ export 'src/aud_graph_stats.dart';
 export 'src/aud_graph_timing.dart';
 export 'src/aud_graph_transaction.dart';
 export 'src/aud_graph_transport_state.dart';
+export 'src/aud_histogram.dart';
 export 'src/aud_load.dart';
 export 'src/aud_node_message.dart';

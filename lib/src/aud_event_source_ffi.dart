@@ -32,37 +32,6 @@ final class AudEventSourceFfi implements AudEventSource {
     required this._onDispose,
   });
 
-  /// The address of `aud_event_source_push`, an
-  /// `AudEventSourcePushFunction`.
-  static int get pushFunctionAddress =>
-      Native.addressOf<
-            NativeFunction<
-              Int32 Function(
-                Pointer<bindings.AudEventSource>,
-                Pointer<Uint32>,
-                Uint32,
-                Int64,
-              )
-            >
-          >(bindings.aud_event_source_push)
-          .address;
-
-  /// The address of `aud_event_source_release`, an
-  /// `AudEventSourceReleaseFunction`.
-  static int get releaseFunctionAddress =>
-      Native.addressOf<
-            NativeFunction<Void Function(Pointer<bindings.AudEventSource>)>
-          >(bindings.aud_event_source_release)
-          .address;
-
-  /// The address of `aud_event_source_size`, an
-  /// `AudEventSourceSizeFunction`.
-  static int get sizeFunctionAddress =>
-      Native.addressOf<
-            NativeFunction<Uint32 Function(Pointer<bindings.AudEventSource>)>
-          >(bindings.aud_event_source_size)
-          .address;
-
   // ...........................................................................
   @override
   final AudNode node;
@@ -73,7 +42,7 @@ final class AudEventSourceFfi implements AudEventSource {
   @override
   final AudSourceTiming timing;
 
-  /// The native source; null once disposed.
+  /// The native source; `nullptr` once disposed.
   Pointer<bindings.AudEventSource> get pointer => _pointer;
 
   /// The address of the native source for a native producer.
@@ -182,6 +151,38 @@ final class AudEventSourceFfi implements AudEventSource {
   @override
   String toString() =>
       'AudEventSource(${node.name}:$port, ${timing.name}, $latencyNs ns)';
+
+  // ...........................................................................
+  /// The address of `aud_event_source_push`, an
+  /// `AudEventSourcePushFunction`.
+  static int get pushFunctionAddress =>
+      Native.addressOf<
+            NativeFunction<
+              Int32 Function(
+                Pointer<bindings.AudEventSource>,
+                Pointer<Uint32>,
+                Uint32,
+                Int64,
+              )
+            >
+          >(bindings.aud_event_source_push)
+          .address;
+
+  /// The address of `aud_event_source_release`, an
+  /// `AudEventSourceReleaseFunction`.
+  static int get releaseFunctionAddress =>
+      Native.addressOf<
+            NativeFunction<Void Function(Pointer<bindings.AudEventSource>)>
+          >(bindings.aud_event_source_release)
+          .address;
+
+  /// The address of `aud_event_source_size`, an
+  /// `AudEventSourceSizeFunction`.
+  static int get sizeFunctionAddress =>
+      Native.addressOf<
+            NativeFunction<Uint32 Function(Pointer<bindings.AudEventSource>)>
+          >(bindings.aud_event_source_size)
+          .address;
 
   // ...........................................................................
   final Pointer<bindings.AudGraph> _graph;

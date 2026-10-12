@@ -1039,7 +1039,7 @@ void countDelivered(AudGraph* graph, AudEventSource* source,
 }
 
 // Places a packet of a source into the block at `offset`; the caller made
-// sure the table has room. False when the target refused it.
+// sure the table has room.
 void deliverSourcePacket(AudGraph* graph, AudEventSource* source,
                          const SourceEvent& packet, uint32_t offset,
                          uint32_t lead, uint32_t flags) {
@@ -1070,16 +1070,21 @@ int32_t fixedOffset(AudGraph* graph, const AudEventSource* source,
 }
 
 // Empties the queue of a source for a release: note offs and controllers
-// at the block start, note ons dropped. False when the block's table
-// filled before the queue was empty; the release then goes on in the next
-// block.
-bool flushSource(AudGraph* graph, AudEventSource* source, bool accepts) {
+// at the block start, note ons dropped. A drop spends one of the block's
+// `budget` like a delivery of the drain, so that at most
+// max_events_per_block packets leave the queues per block. False when the
+// block's table filled or the budget ran out before the queue was empty;
+// the release then goes on in the next block.
+bool flushSource(AudGraph* graph, AudEventSource* source, bool accepts,
+                 uint32_t* budget) {
   NodeInstance* target = source->target;
   while (const SourceEvent* packet = source->queue->peek()) {
     const bool noteOn = aud_ump_is_note_on(packet->words[0], packet->words[1]);
     if (!accepts || noteOn) {
+      if (*budget == 0) return false;
       source->dropped.fetch_add(1, std::memory_order_relaxed);
       source->queue->pop();
+      *budget -= 1;
       continue;
     }
     if (!blockHasRoom(graph)) return false;
@@ -1095,30 +1100,35 @@ bool flushSource(AudGraph* graph, AudEventSource* source, bool accepts) {
   return true;
 }
 
+// Lifts one pedal of a source - CC `controller` = 0 on `channel` of
+// `group`, as a MIDI 1.0 control change - when its bit is set in
+// `channels`, and clears the bit; false when the block's table has no
+// room, the pedal then stays noted for the next block.
+bool liftPedal(AudGraph* graph, AudEventSource* source, uint32_t group,
+               uint32_t channel, uint32_t controller, uint16_t* channels) {
+  const uint16_t bit = uint16_t(1u << channel);
+  if ((*channels & bit) == 0) return true;
+  if (!blockHasRoom(graph)) return false;
+  const uint32_t word = aud_ump_midi1_word(group, 0xB0 | channel, controller, 0);
+  addBlockEvent(graph, source->target->rtIndex,
+                aud_event_ump(&word, 1, 0, source->port), 0,
+                graph->sourceSequence++);
+  *channels &= uint16_t(~bit);
+  return true;
+}
+
 // Lifts the pedals the source delivered: CC64 = 0 and CC66 = 0 on every
-// group and channel that saw one, as MIDI 1.0 control changes, as far as
-// the block's table has room; a pedal that found none stays noted for the
-// next block. True once every pedal is lifted.
+// group and channel that saw one, as far as the block's table has room.
+// True once every pedal is lifted.
 bool liftPedals(AudGraph* graph, AudEventSource* source) {
-  const uint32_t node = source->target->rtIndex;
   for (uint32_t group = 0; group < 16; ++group) {
     for (uint32_t channel = 0; channel < 16; ++channel) {
-      const uint16_t bit = uint16_t(1u << channel);
-      if (source->sustain[group] & bit) {
-        if (!blockHasRoom(graph)) return false;
-        const uint32_t word =
-            aud_ump_midi1_word(group, 0xB0 | channel, 64, 0);
-        addBlockEvent(graph, node, aud_event_ump(&word, 1, 0, source->port), 0,
-                      graph->sourceSequence++);
-        source->sustain[group] &= uint16_t(~bit);
+      if (!liftPedal(graph, source, group, channel, 64,
+                     &source->sustain[group])) {
+        return false;
       }
-      if (source->soft[group] & bit) {
-        if (!blockHasRoom(graph)) return false;
-        const uint32_t word =
-            aud_ump_midi1_word(group, 0xB0 | channel, 66, 0);
-        addBlockEvent(graph, node, aud_event_ump(&word, 1, 0, source->port), 0,
-                      graph->sourceSequence++);
-        source->soft[group] &= uint16_t(~bit);
+      if (!liftPedal(graph, source, group, channel, 66, &source->soft[group])) {
+        return false;
       }
     }
   }
@@ -1140,12 +1150,14 @@ void releaseRetiredTarget(AudGraph* graph, AudEventSource* source) {
   source->releases.fetch_add(1, std::memory_order_relaxed);
 }
 
-// Carries out a release: the queue empties, then the target's notes close
-// and its pedals lift, each as far as the block's table has room - the
-// table takes the release of one source after full budgets, several
-// sources in one block carry the rest over. True once it is complete.
-bool releaseSource(AudGraph* graph, AudEventSource* source, bool accepts) {
-  if (!flushSource(graph, source, accepts)) return false;
+// Carries out a release: the queue empties - its drops within the block's
+// `budget` -, then the target's notes close and its pedals lift, each as
+// far as the block's table has room - the table takes the release of one
+// source after full budgets, several sources in one block carry the rest
+// over. True once it is complete.
+bool releaseSource(AudGraph* graph, AudEventSource* source, bool accepts,
+                   uint32_t* budget) {
+  if (!flushSource(graph, source, accepts, budget)) return false;
   if (accepts) {
     if (!closeNotes(graph, source->target, source->target->rtIndex, true)) {
       return false;
@@ -1162,7 +1174,9 @@ bool releaseSource(AudGraph* graph, AudEventSource* source, bool accepts) {
 }
 
 // Drains one source with what is left of the budget: peek and pop until a
-// packet belongs to a later block or the table is full.
+// packet belongs to a later block or the table is full. A packet dropped
+// for a target that takes no events spends the budget like a delivered
+// one, so that at most max_events_per_block packets leave per block.
 void drainSource(AudGraph* graph, AudEventSource* source, bool accepts,
                  uint32_t* budget) {
   NodeInstance* target = source->target;
@@ -1173,6 +1187,7 @@ void drainSource(AudGraph* graph, AudEventSource* source, bool accepts,
     if (!accepts) {
       source->dropped.fetch_add(1, std::memory_order_relaxed);
       source->queue->pop();
+      *budget -= 1;
       continue;
     }
     if (!blockHasRoom(graph)) return;
@@ -1204,7 +1219,8 @@ void drainSource(AudGraph* graph, AudEventSource* source, bool accepts,
 
 // [realtime] Drains the sources in the order of their slots: a release
 // first, then the packets whose time has come, within one budget for all
-// sources together (interop-002); a retired source is released and let go.
+// sources together, delivered or dropped (interop-002); a retired source
+// is released and let go.
 void drainSources(AudGraph* graph) {
   uint32_t budget = graph->config.max_events_per_block;
   for (std::atomic<AudEventSource*>& slot : graph->sourceSlots) {
@@ -1217,7 +1233,7 @@ void drainSources(AudGraph* graph) {
       // The last act: the notes of the target close, then the source is
       // the control thread's again. A table too full for the flush waits
       // for the next block, as a release does.
-      if (!releaseSource(graph, source, accepts)) continue;
+      if (!releaseSource(graph, source, accepts, &budget)) continue;
       AudGraphNotification n = makeNotification(graph, AUD_NOTIFY_SOURCE_DONE);
       n.node = source->node;
       n.value = static_cast<int64_t>(reinterpret_cast<intptr_t>(source));
@@ -1235,7 +1251,7 @@ void drainSources(AudGraph* graph) {
       source->releasing = true;
     }
     if (source->releasing) {
-      source->releasing = !releaseSource(graph, source, accepts);
+      source->releasing = !releaseSource(graph, source, accepts, &budget);
       continue;
     }
     drainSource(graph, source, accepts, &budget);

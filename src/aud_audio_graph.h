@@ -525,7 +525,7 @@ AUD_EXPORT int64_t aud_graph_sample_position(AudGraph* graph);
 // the block stays in the queue and ends the drain of its source, a packet
 // that does not fit the block's event table stays too, so no note off is
 // lost; at most max_events_per_block packets of all sources leave their
-// queues per block, the rest follows in order. A producer pushes in time
+// queues per block, delivered or dropped, the rest follows in order. A producer pushes in time
 // order; a timestamp earlier than its predecessor's is raised to it and
 // counted. The push checks no lookahead, so an offline producer works.
 // Packets for a target that takes no more events - retired, or not yet
@@ -563,7 +563,7 @@ enum {
 
 typedef struct AudEventSourceConfig {
   uint32_t struct_size;
-  uint32_t capacity;   // events; rounded up to a power of two; 0: 4096
+  uint32_t capacity;   // events; rounded up to a power of two, at most 2^20; 0: 4096
   int32_t node;        // target node handle, committed
   uint32_t port;       // target event inlet
   uint32_t timing;     // AUD_SOURCE_TIMING_*

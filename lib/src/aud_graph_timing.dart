@@ -5,6 +5,7 @@
 // found in the LICENSE file in the root of this package.
 
 import 'aud_graph_constants.dart' as bindings;
+import 'aud_histogram.dart';
 
 // #############################################################################
 /// The timing of the engine as the last block saw it (time-001,
@@ -26,12 +27,6 @@ class AudGraphTiming {
     this.timeFilterResets = 0,
     this.periodHistogram = const [],
   });
-
-  /// The width of a bin of [periodHistogram] in nanoseconds: 100 us.
-  static const int periodBinNs = bindings.AUD_GRAPH_PERIOD_BIN_NS;
-
-  /// The bins of [periodHistogram] below the overflow bin: up to 51.2 ms.
-  static const int periodBins = bindings.AUD_GRAPH_PERIOD_BINS;
 
   // ...........................................................................
   /// Whether a block has rendered; the other fields are 0 before.
@@ -95,23 +90,10 @@ class AudGraphTiming {
   /// stayed - the upper edge of the bin -, null without renders; at least
   /// `periodBins * periodBinNs` when the fraction lies in the overflow
   /// bin. P of midi-003 is [periodP999Ns].
-  int? periodPercentileNs(double fraction) {
-    if (fraction < 0 || fraction > 1) {
-      throw ArgumentError.value(fraction, 'fraction', 'Not between 0 and 1');
-    }
-    var total = 0;
-    for (final count in periodHistogram) {
-      total += count;
-    }
-    if (total == 0) return null;
-    final wanted = fraction * total;
-    var seen = 0;
-    for (var bin = 0; bin < periodHistogram.length; bin++) {
-      seen += periodHistogram[bin];
-      if (seen > 0 && seen >= wanted) return (bin + 1) * periodBinNs;
-    }
-    return periodHistogram.length * periodBinNs; // coverage:ignore-line
-  }
+  int? periodPercentileNs(double fraction) => AudHistogram(
+    counts: periodHistogram,
+    binNs: periodBinNs,
+  ).percentileNs(fraction);
 
   /// The median period in nanoseconds, null without renders.
   int? get periodMedianNs => periodPercentileNs(0.5);
@@ -142,4 +124,11 @@ class AudGraphTiming {
 
   @override
   String toString() => 'AudGraphTiming(${toJson()})';
+
+  // ...........................................................................
+  /// The width of a bin of [periodHistogram] in nanoseconds: 100 us.
+  static const int periodBinNs = bindings.AUD_GRAPH_PERIOD_BIN_NS;
+
+  /// The bins of [periodHistogram] below the overflow bin: up to 51.2 ms.
+  static const int periodBins = bindings.AUD_GRAPH_PERIOD_BINS;
 }

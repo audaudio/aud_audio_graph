@@ -31,8 +31,18 @@
 - Add the review fixes of the event sources and the timing
 
 - The gap that resets the time filter no longer enters the period histogram
+
 - A retired source frees its slot before it is let go; releases carry over a full block table
+
 - Zombie routes skip edges the transaction disconnected; the timing takes its last read
+
+- Add review fixes of ticket 26
+- A packet dropped for a target that takes no events spends the block's budget like a delivered one, in the drain and in the flush of a release
+- AudHistogram carries the percentile of the event source and the timing histograms
+- AudSourceTiming.fromCode throws an ArgumentError for an unknown code
+- liftPedal lifts one pedal of a channel; collectSources returns void
+- The capacity of a source is at most 2^20; the Dart example attaches, detaches, sets latencyNs and lists graph.eventSources
+- Statics after the public getters; the stress tests carry their numbers in AUD_CHECK_MSG instead of printing them
 
 ## 0.5.0 - 2026-10-12
 

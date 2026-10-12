@@ -15,9 +15,9 @@
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
-#include <cstdio>
 #include <cstring>
 #include <set>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -747,12 +747,15 @@ AUD_TEST(stress_source_takes_10000_events_per_second_from_a_producer_thread) {
   AUD_CHECK(soundingNotes().empty());
   AUD_CHECK(f.stats().realtime_violations == 0);
   AUD_CHECK(f.stats().events_dropped == 0);
-  std::printf("  10 s at 10,000 events/s: %llu delivered, %llu late, max %.2f ms late, "
-              "max delay %.3f ms, %u refused\n",
-              static_cast<unsigned long long>(s.delivered),
-              static_cast<unsigned long long>(s.late),
-              static_cast<double>(s.max_late_ns) / 1e6,
-              static_cast<double>(s.max_delay_ns) / 1e6, refused.load());
+  // A second of lateness or delay is a stalled drain, not a stalled
+  // machine; the failure names what the run saw.
+  const std::string seen =
+      std::to_string(s.delivered) + " delivered, " + std::to_string(s.late) +
+      " late, max " + std::to_string(s.max_late_ns / 1000000) +
+      " ms late, max delay " + std::to_string(s.max_delay_ns / 1000000) +
+      " ms, " + std::to_string(refused.load()) + " refused";
+  AUD_CHECK_MSG(s.max_late_ns < 1000000000 && s.max_delay_ns < 1000000000,
+                seen.c_str());
 }
 
 AUD_TEST(stress_source_plays_64_note_chords_every_block) {
@@ -856,7 +859,8 @@ AUD_TEST(stress_source_release_during_a_burst_leaves_no_note_on) {
   producer.join();
   releaser.join();
   aud_event_source_release(source);
-  const uint32_t target = blocks.load(std::memory_order_acquire) + 4;
+  // The flush drops the note ons within the budget of a block.
+  const uint32_t target = blocks.load(std::memory_order_acquire) + 8;
   while (blocks.load(std::memory_order_acquire) < target) std::this_thread::yield();
   stop.store(true, std::memory_order_release);
   stream.join();
@@ -867,10 +871,13 @@ AUD_TEST(stress_source_release_during_a_burst_leaves_no_note_on) {
   AUD_CHECK(aud_event_source_size(source) == 0);
   AUD_CHECK(f.stats().events_dropped == 0);
   AUD_CHECK(f.stats().realtime_violations == 0);
-  std::printf("  release during a burst: %llu pushed, %llu dropped, %llu releases\n",
-              static_cast<unsigned long long>(s.pushed),
-              static_cast<unsigned long long>(s.dropped),
-              static_cast<unsigned long long>(s.releases));
+  // Every packet the queue took was delivered or dropped; the failure
+  // names what the run saw.
+  const std::string seen = std::to_string(s.pushed) + " pushed, " +
+                           std::to_string(s.delivered) + " delivered, " +
+                           std::to_string(s.dropped) + " dropped, " +
+                           std::to_string(s.releases) + " releases";
+  AUD_CHECK_MSG(s.delivered + s.dropped == s.pushed, seen.c_str());
 }
 
 AUD_TEST(stress_removing_a_pass_through_node_closes_the_chord_and_the_pedal) {

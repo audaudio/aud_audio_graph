@@ -164,10 +164,8 @@ void drainSources(AudGraph* graph);
 
 // aud_graph_event_source.cpp
 
-// [control] Frees the retired sources the realtime thread let go of;
-// true when one was freed, so that the collector looks at the nodes
-// again.
-bool collectSources(AudGraph* graph);
+// [control] Frees the retired sources the realtime thread let go of.
+void collectSources(AudGraph* graph);
 
 // [control] Frees every source while no block renders: the destroy of
 // the graph.

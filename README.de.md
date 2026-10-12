@@ -91,9 +91,9 @@ für einen committeten Node angelegt und vom Realtime-Thread in jedem Block
 geleert, nach dem Scheduler und vor den Events des Hosts.
 
 - `aud_graph_create_event_source` nimmt eine `AudEventSourceConfig` - den
-  Ziel-Node und sein Event-Inlet, die Kapazität (eine Zweierpotenz,
-  4096 als Default), die Timing-Policy und die Latenz C -; höchstens
-  `AUD_GRAPH_MAX_EVENT_SOURCES` (64) pro Graph.
+  Ziel-Node und sein Event-Inlet, die Kapazität (auf eine Zweierpotenz
+  aufgerundet, höchstens 2^20, 4096 als Default), die Timing-Policy und
+  die Latenz C -; höchstens `AUD_GRAPH_MAX_EVENT_SOURCES` (64) pro Graph.
 - Timing: unter `AUD_SOURCE_TIMING_FIXED` klingt ein Paket zu seinem
   Zeitstempel plus C am Ausgang, um den Lead seines Pfads vorgezogen;
   unter `AUD_SOURCE_TIMING_IMMEDIATE` spielt es am Anfang des Blocks, der
@@ -104,7 +104,8 @@ geleert, nach dem Scheduler und vor den Events des Hosts.
   hier nicht. Ein Zeitstempel vor dem seines Vorgängers wird angehoben und
   gezählt; kein Lookahead wird geprüft, damit Offline-Produzenten
   funktionieren. `max_events_per_block` begrenzt, was alle Quellen
-  zusammen pro Block liefern; der Rest folgt in Reihenfolge.
+  zusammen pro Block liefern oder verwerfen; der Rest folgt in
+  Reihenfolge.
 - `aud_event_source_push` nimmt ein Paket von einem bis vier Wörtern von
   jeweils einem Produzenten-Thread; `aud_event_source_attach` und
   `_detach` übergeben die Quelle von einem Produzenten an den nächsten
@@ -261,10 +262,14 @@ host.waitLoads();                                        // the loads of the hos
 
 final source = graph.createEventSource(sampler,         // ticket 26: one producer at a time
     timing: AudSourceTiming.fixed, latencyNs: 27000000);
+source.attach(1);                                        // the producer's token, before its first push
 source.push(packet.words, hostTimeNs: AudClock.nowNs()); // false when the queue is full
+source.latencyNs = 30000000;                             // C, from the next block on
 source.release();                                        // notes off, pedals up
+source.detach(1);                                        // after the last push; the next producer attaches
 print(source.stats.latencyP99Ns);                        // percentiles of the histograms
 print(graph.timing.periodP999Ns);                        // P of C = P + L + m
+print(graph.eventSources);                               // the live sources of the graph
 source.address;                                          // for a native producer, with
 AudEventSourceFfi.pushFunctionAddress;                   // the push, release and size functions
 source.dispose();                                        // AudSourceDoneNotification follows

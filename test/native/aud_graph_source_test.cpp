@@ -401,12 +401,51 @@ AUD_TEST(source_keeps_a_packet_that_does_not_fit_the_block) {
     pushWord(source, aud_ump_midi1_word(0, 0x90, 60, 100));
   }
   aud_event_source_release(source);
+  // The flush drops the note ons within the budget of a block.
   s.f.render(256);
   s.f.render(256);
+  AUD_CHECK(sourceStats(source).dropped == 8);
+  AUD_CHECK(sourceStats(source).releases == 0);
+  for (uint32_t i = 0; i < 198; ++i) s.f.render(256);
   AUD_CHECK(s.f.stats().events_dropped == before.events_dropped);
   AUD_CHECK(sourceStats(source).dropped == 800);
   AUD_CHECK(sourceStats(source).releases == 1);
   AUD_CHECK(aud_event_source_size(source) == 0);
+}
+
+AUD_TEST(source_drops_within_the_budget_for_a_target_that_takes_no_events) {
+  SourceFixture s([](AudGraphConfig& c) { c.max_events_per_block = 4; });
+  AudEventSource* source = makeSource(s.f, s.recorder, AUD_SOURCE_TIMING_IMMEDIATE);
+  s.f.commit([&] { aud_graph_remove_node(s.f.graph, s.recorder); });
+  for (uint32_t i = 0; i < 10; ++i) {
+    pushWord(source, aud_ump_midi1_word(0, 0x90, 60 + i, 100));
+  }
+  // The retired target takes no events: the drain drops at most the
+  // budget per block, the rest waits in the queue.
+  s.f.render(256);
+  AUD_CHECK(sourceStats(source).dropped == 4);
+  AUD_CHECK(aud_event_source_size(source) == 6);
+  s.f.render(256);
+  AUD_CHECK(sourceStats(source).dropped == 8);
+  s.f.render(256);
+  AUD_CHECK(sourceStats(source).dropped == 10);
+  AUD_CHECK(aud_event_source_size(source) == 0);
+  AUD_CHECK(sourceStats(source).releases == 1);
+  // The flush of a release drops within the budget too and carries the
+  // release over.
+  for (uint32_t i = 0; i < 10; ++i) {
+    pushWord(source, aud_ump_midi1_word(0, 0x90, 60 + i, 100));
+  }
+  aud_event_source_release(source);
+  s.f.render(256);
+  AUD_CHECK(sourceStats(source).dropped == 14);
+  AUD_CHECK(sourceStats(source).releases == 1);
+  s.f.render(256);
+  s.f.render(256);
+  AUD_CHECK(sourceStats(source).dropped == 20);
+  AUD_CHECK(sourceStats(source).releases == 2);
+  AUD_CHECK(aud_event_source_size(source) == 0);
+  AUD_CHECK(s.f.stats().events_dropped == 0);
 }
 
 // ############################################################################

@@ -12,8 +12,19 @@ void main() {
     test('carries the codes of the engine', () {
       expect(AudSourceTiming.fixed.code, 0);
       expect(AudSourceTiming.immediate.code, 1);
-      expect(AudSourceTiming.fromCode(1), AudSourceTiming.immediate);
-      expect(() => AudSourceTiming.fromCode(7), throwsStateError);
+      for (final timing in AudSourceTiming.values) {
+        expect(AudSourceTiming.fromCode(timing.code), timing);
+      }
+      expect(
+        () => AudSourceTiming.fromCode(7),
+        throwsA(
+          isA<ArgumentError>().having(
+            (e) => e.message,
+            'message',
+            'Unknown timing',
+          ),
+        ),
+      );
     });
   });
 

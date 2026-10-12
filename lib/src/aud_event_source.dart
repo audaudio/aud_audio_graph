@@ -6,6 +6,7 @@
 
 import 'aud_graph_constants.dart' as bindings;
 import 'aud_graph_node.dart';
+import 'aud_histogram.dart';
 
 // #############################################################################
 /// The timing policy of an event source (midi-003, ticket 26).
@@ -26,8 +27,10 @@ enum AudSourceTiming {
   final int code;
 
   /// The policy of a code.
-  static AudSourceTiming fromCode(int code) =>
-      values.firstWhere((t) => t.code == code);
+  static AudSourceTiming fromCode(int code) => values.firstWhere(
+    (t) => t.code == code,
+    orElse: () => throw ArgumentError.value(code, 'code', 'Unknown timing'),
+  );
 }
 
 // #############################################################################
@@ -51,18 +54,6 @@ class AudEventSourceStats {
     this.delayHistogram = const [],
     this.latencyHistogram = const [],
   });
-
-  /// The width of a bin of [delayHistogram] in nanoseconds: 50 us.
-  static const int delayBinNs = bindings.AUD_SOURCE_DELAY_BIN_NS;
-
-  /// The bins of [delayHistogram] below the overflow bin: up to 25 ms.
-  static const int delayBins = bindings.AUD_SOURCE_DELAY_BINS;
-
-  /// The width of a bin of [latencyHistogram] in nanoseconds: 0.25 ms.
-  static const int latencyBinNs = bindings.AUD_SOURCE_LATENCY_BIN_NS;
-
-  /// The bins of [latencyHistogram] below the overflow bin: up to 256 ms.
-  static const int latencyBins = bindings.AUD_SOURCE_LATENCY_BINS;
 
   // ...........................................................................
   /// Whether a producer holds the token.
@@ -117,13 +108,17 @@ class AudEventSourceStats {
   /// packets stayed - the upper edge of the bin -, null without packets;
   /// at least `delayBins * delayBinNs` when the fraction lies in the
   /// overflow bin.
-  int? delayPercentileNs(double fraction) =>
-      _percentile(delayHistogram, delayBinNs, fraction);
+  int? delayPercentileNs(double fraction) => AudHistogram(
+    counts: delayHistogram,
+    binNs: delayBinNs,
+  ).percentileNs(fraction);
 
   /// The input to output time in nanoseconds below which [fraction] of
   /// the packets stayed, like [delayPercentileNs].
-  int? latencyPercentileNs(double fraction) =>
-      _percentile(latencyHistogram, latencyBinNs, fraction);
+  int? latencyPercentileNs(double fraction) => AudHistogram(
+    counts: latencyHistogram,
+    binNs: latencyBinNs,
+  ).percentileNs(fraction);
 
   /// The median delivery delay in nanoseconds, null without packets.
   int? get delayMedianNs => delayPercentileNs(0.5);
@@ -136,24 +131,6 @@ class AudEventSourceStats {
 
   /// The input to output time of the 99th percentile in nanoseconds.
   int? get latencyP99Ns => latencyPercentileNs(0.99);
-
-  static int? _percentile(List<int> histogram, int binNs, double fraction) {
-    if (fraction < 0 || fraction > 1) {
-      throw ArgumentError.value(fraction, 'fraction', 'Not between 0 and 1');
-    }
-    var total = 0;
-    for (final count in histogram) {
-      total += count;
-    }
-    if (total == 0) return null;
-    final wanted = fraction * total;
-    var seen = 0;
-    for (var bin = 0; bin < histogram.length; bin++) {
-      seen += histogram[bin];
-      if (seen >= wanted && (seen > 0)) return (bin + 1) * binNs;
-    }
-    return histogram.length * binNs; // coverage:ignore-line
-  }
 
   // ...........................................................................
   /// The counters as JSON; the histograms as their percentiles.
@@ -178,6 +155,19 @@ class AudEventSourceStats {
 
   @override
   String toString() => 'AudEventSourceStats(${toJson()})';
+
+  // ...........................................................................
+  /// The width of a bin of [delayHistogram] in nanoseconds: 50 us.
+  static const int delayBinNs = bindings.AUD_SOURCE_DELAY_BIN_NS;
+
+  /// The bins of [delayHistogram] below the overflow bin: up to 25 ms.
+  static const int delayBins = bindings.AUD_SOURCE_DELAY_BINS;
+
+  /// The width of a bin of [latencyHistogram] in nanoseconds: 0.25 ms.
+  static const int latencyBinNs = bindings.AUD_SOURCE_LATENCY_BIN_NS;
+
+  /// The bins of [latencyHistogram] below the overflow bin: up to 256 ms.
+  static const int latencyBins = bindings.AUD_SOURCE_LATENCY_BINS;
 }
 
 // #############################################################################
