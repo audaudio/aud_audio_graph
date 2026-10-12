@@ -29,6 +29,77 @@ external int aud_cache_set_budget(int bytes);
 @ffi.Native<ffi.Int32 Function(ffi.Pointer<AudCacheUsage>)>()
 external int aud_cache_usage(ffi.Pointer<AudCacheUsage> usage);
 
+/// [control] A producer attaches before its first push and detaches after
+/// its last one (CAS 0 -> token; AUD_GRAPH_ERROR_BUSY while another is
+/// attached, AUD_ERROR_INVALID_ARGUMENT for the token 0 or a detach with
+/// another token).
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<AudEventSource>, ffi.Uint64)>()
+external int aud_event_source_attach(
+  ffi.Pointer<AudEventSource> source,
+  int token,
+);
+
+@ffi.Native<ffi.Uint32 Function(ffi.Pointer<AudEventSource>)>()
+external int aud_event_source_capacity(ffi.Pointer<AudEventSource> source);
+
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<AudEventSource>, ffi.Uint64)>()
+external int aud_event_source_detach(
+  ffi.Pointer<AudEventSource> source,
+  int token,
+);
+
+/// [producer: one thread at a time, never the audio thread] One UMP packet
+/// of 1 to 4 words with its timestamp in host ns (0: now). AUD_OK;
+/// AUD_ERROR_QUEUE_FULL (a note off that does not fit raises release);
+/// AUD_ERROR_INVALID_ARGUMENT for a malformed packet - NULL words, or a
+/// count other than the type's.
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<AudEventSource>,
+    ffi.Pointer<ffi.Uint32>,
+    ffi.Uint32,
+    ffi.Int64,
+  )
+>()
+external int aud_event_source_push(
+  ffi.Pointer<AudEventSource> source,
+  ffi.Pointer<ffi.Uint32> words,
+  int count,
+  int host_time_ns,
+);
+
+/// [any thread] Raises release: before the next drain the queue empties
+/// (note offs and controllers at offset 0, note ons dropped and counted)
+/// and the target's notes close (note offs, then CC64 = 0 and CC66 = 0 on
+/// every group and channel the source delivered a sustain or soft pedal
+/// on). A queue that does not fit into one block's event table empties
+/// over the blocks it takes; the notes close once it is empty. Idempotent.
+@ffi.Native<ffi.Void Function(ffi.Pointer<AudEventSource>)>()
+external void aud_event_source_release(ffi.Pointer<AudEventSource> source);
+
+/// [control] Sets C; takes effect at the next block.
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<AudEventSource>, ffi.Int64)>()
+external int aud_event_source_set_latency(
+  ffi.Pointer<AudEventSource> source,
+  int latency_ns,
+);
+
+/// [producer] Events waiting; approximate from other threads.
+@ffi.Native<ffi.Uint32 Function(ffi.Pointer<AudEventSource>)>()
+external int aud_event_source_size(ffi.Pointer<AudEventSource> source);
+
+/// [any thread] Copies the counters.
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<AudEventSource>,
+    ffi.Pointer<AudEventSourceStats>,
+  )
+>()
+external int aud_event_source_stats(
+  ffi.Pointer<AudEventSource> source,
+  ffi.Pointer<AudEventSourceStats> stats,
+);
+
 /// [control] Opens a transaction; AUD_ERROR_STATE while one is open.
 @ffi.Native<ffi.Int32 Function(ffi.Pointer<AudGraph>)>()
 external int aud_graph_begin(ffi.Pointer<AudGraph> graph);
@@ -98,6 +169,24 @@ external ffi.Pointer<AudGraph> aud_graph_create(
   ffi.Pointer<AudGraphConfig> config,
 );
 
+/// [control] A source for a committed target; NULL and *result otherwise:
+/// AUD_ERROR_NOT_FOUND, AUD_ERROR_RETIRED, AUD_ERROR_STATE for a node that
+/// has not been committed, AUD_ERROR_INVALID_ARGUMENT for the graph itself,
+/// a port beyond the node's event inputs or an unknown timing,
+/// AUD_ERROR_CAPACITY beyond AUD_GRAPH_MAX_EVENT_SOURCES.
+@ffi.Native<
+  ffi.Pointer<AudEventSource> Function(
+    ffi.Pointer<AudGraph>,
+    ffi.Pointer<AudEventSourceConfig>,
+    ffi.Pointer<ffi.Int32>,
+  )
+>()
+external ffi.Pointer<AudEventSource> aud_graph_create_event_source(
+  ffi.Pointer<AudGraph> graph,
+  ffi.Pointer<AudEventSourceConfig> config,
+  ffi.Pointer<ffi.Int32> result,
+);
+
 /// [control] Creates and prepares an instance of a registered type; returns
 /// its handle (> 0) or an error code: AUD_ERROR_UNKNOWN_TYPE,
 /// AUD_ERROR_FORMAT for channels outside the descriptor's range,
@@ -123,6 +212,16 @@ external int aud_graph_create_node(
 /// posted have run - not those of other graphs (ticket 25).
 @ffi.Native<ffi.Void Function(ffi.Pointer<AudGraph>)>()
 external void aud_graph_destroy(ffi.Pointer<AudGraph> graph);
+
+/// [control] Retires the source; the graph frees it once the audio thread
+/// let go (see above). Its producer must have detached.
+@ffi.Native<
+  ffi.Int32 Function(ffi.Pointer<AudGraph>, ffi.Pointer<AudEventSource>)
+>()
+external int aud_graph_destroy_event_source(
+  ffi.Pointer<AudGraph> graph,
+  ffi.Pointer<AudEventSource> source,
+);
 
 /// [control] Removes an audio connection inside the open transaction.
 @ffi.Native<
@@ -601,6 +700,16 @@ external int aud_graph_tap_read(
   int frames,
 );
 
+/// [any thread] A consistent snapshot of the fields before the histogram,
+/// the histogram as it is; AUD_ERROR_STATE before a block ran.
+@ffi.Native<
+  ffi.Int32 Function(ffi.Pointer<AudGraph>, ffi.Pointer<AudGraphTiming>)
+>()
+external int aud_graph_timing(
+  ffi.Pointer<AudGraph> graph,
+  ffi.Pointer<AudGraphTiming> timing,
+);
+
 /// [control, one producer] Enqueues a transport request; the provider
 /// applies it on the realtime thread at the request's time.
 @ffi.Native<
@@ -921,6 +1030,8 @@ const int AUD_GRAPH_DISPOSED = 5;
 
 const int AUD_GRAPH_DROP_LATE_EVENTS = 1;
 
+const int AUD_GRAPH_ERROR_BUSY = -101;
+
 const int AUD_GRAPH_ERROR_REALTIME_VIOLATION = -100;
 
 const String AUD_GRAPH_FEEDBACK_TYPE_ID = 'aud.graph.feedback';
@@ -928,6 +1039,8 @@ const String AUD_GRAPH_FEEDBACK_TYPE_ID = 'aud.graph.feedback';
 const String AUD_GRAPH_FILTER_TYPE_ID = 'aud.graph.filter';
 
 const String AUD_GRAPH_INTERNAL_TRANSPORT_ID = 'aud.graph.transport';
+
+const int AUD_GRAPH_MAX_EVENT_SOURCES = 64;
 
 const int AUD_GRAPH_MAX_MESSAGE_ARGS = 16;
 
@@ -940,6 +1053,10 @@ const String AUD_GRAPH_MIXER_TYPE_ID = 'aud.graph.mixer';
 const int AUD_GRAPH_NODE = 0;
 
 const String AUD_GRAPH_OSCILLATOR_TYPE_ID = 'aud.graph.oscillator';
+
+const int AUD_GRAPH_PERIOD_BINS = 512;
+
+const int AUD_GRAPH_PERIOD_BIN_NS = 100000;
 
 const int AUD_GRAPH_PREPARED = 1;
 
@@ -983,6 +1100,8 @@ const int AUD_NOTIFY_NODE_DONE = 3;
 
 const int AUD_NOTIFY_REVISION = 1;
 
+const int AUD_NOTIFY_SOURCE_DONE = 10;
+
 const int AUD_NOTIFY_STATE = 2;
 
 const int AUD_NOTIFY_TIME_RESET = 7;
@@ -994,6 +1113,22 @@ const int AUD_OSCILLATOR_PARAM_AMPLITUDE = 1;
 const int AUD_OSCILLATOR_PARAM_FREQUENCY = 0;
 
 const int AUD_OSCILLATOR_PARAM_WAVEFORM = 2;
+
+const int AUD_SOURCE_DELAY_BINS = 500;
+
+const int AUD_SOURCE_DELAY_BIN_NS = 50000;
+
+const int AUD_SOURCE_LATENCY_BINS = 1024;
+
+const int AUD_SOURCE_LATENCY_BIN_NS = 250000;
+
+const int AUD_SOURCE_TIMING_FIXED = 0;
+
+const int AUD_SOURCE_TIMING_IMMEDIATE = 1;
+
+const int AUD_TIMING_OFFLINE = 2;
+
+const int AUD_TIMING_VALID = 1;
 
 /// ............................................................................
 /// The resources of the process (lifecycle-002, ticket 25)
@@ -1055,6 +1190,147 @@ final class AudCacheUsage extends ffi.Struct {
     ..ref.trimmed = trimmed
     ..ref.workers = workers
     ..ref.tasks = tasks;
+}
+
+final class AudEventSource extends ffi.Opaque {}
+
+final class AudEventSourceConfig extends ffi.Struct {
+  @ffi.Uint32()
+  external int struct_size;
+
+  /// events; rounded up to a power of two; 0: 4096
+  @ffi.Uint32()
+  external int capacity;
+
+  /// target node handle, committed
+  @ffi.Int32()
+  external int node;
+
+  /// target event inlet
+  @ffi.Uint32()
+  external int port;
+
+  /// AUD_SOURCE_TIMING_*
+  @ffi.Uint32()
+  external int timing;
+
+  @ffi.Uint32()
+  external int reserved;
+
+  /// C of AUD_SOURCE_TIMING_FIXED
+  @ffi.Int64()
+  external int latency_ns;
+
+  static ffi.Pointer<AudEventSourceConfig> $allocate(
+    ffi.Allocator $allocator, {
+    required int struct_size,
+    required int capacity,
+    required int node,
+    required int port,
+    required int timing,
+    required int reserved,
+    required int latency_ns,
+  }) => $allocator<AudEventSourceConfig>()
+    ..ref.struct_size = struct_size
+    ..ref.capacity = capacity
+    ..ref.node = node
+    ..ref.port = port
+    ..ref.timing = timing
+    ..ref.reserved = reserved
+    ..ref.latency_ns = latency_ns;
+}
+
+/// The function pointer types a bridge that includes this header without
+/// linking the graph hands to its adapters (ticket 26).
+typedef AudEventSourcePushFunction =
+    ffi.Pointer<ffi.NativeFunction<AudEventSourcePushFunctionFunction>>;
+typedef AudEventSourcePushFunctionFunction =
+    ffi.Int32 Function(
+      ffi.Pointer<AudEventSource>,
+      ffi.Pointer<ffi.Uint32>,
+      ffi.Uint32,
+      ffi.Int64,
+    );
+typedef DartAudEventSourcePushFunctionFunction =
+    int Function(
+      ffi.Pointer<AudEventSource>,
+      ffi.Pointer<ffi.Uint32>,
+      int,
+      int,
+    );
+typedef AudEventSourceReleaseFunction =
+    ffi.Pointer<ffi.NativeFunction<AudEventSourceReleaseFunctionFunction>>;
+typedef AudEventSourceReleaseFunctionFunction =
+    ffi.Void Function(ffi.Pointer<AudEventSource>);
+typedef DartAudEventSourceReleaseFunctionFunction =
+    void Function(ffi.Pointer<AudEventSource>);
+typedef AudEventSourceSizeFunction =
+    ffi.Pointer<ffi.NativeFunction<AudEventSourceSizeFunctionFunction>>;
+typedef AudEventSourceSizeFunctionFunction =
+    ffi.Uint32 Function(ffi.Pointer<AudEventSource>);
+typedef DartAudEventSourceSizeFunctionFunction =
+    int Function(ffi.Pointer<AudEventSource>);
+
+/// The counters of a source: relaxed atomics, each exact on its own.
+final class AudEventSourceStats extends ffi.Struct {
+  @ffi.Uint32()
+  external int struct_size;
+
+  /// a producer holds the token
+  @ffi.Uint32()
+  external int attached;
+
+  /// packets the queue took
+  @ffi.Uint64()
+  external int pushed;
+
+  /// the queue was full, or the packet malformed
+  @ffi.Uint64()
+  external int rejected;
+
+  @ffi.Uint64()
+  external int delivered;
+
+  /// played at the block start after their time
+  @ffi.Uint64()
+  external int late;
+
+  @ffi.Int64()
+  external int max_late_ns;
+
+  /// Note ons a release dropped, packets for a target that takes no events.
+  @ffi.Uint64()
+  external int dropped;
+
+  /// timestamps raised to the predecessor's
+  @ffi.Uint64()
+  external int reordered;
+
+  /// releases the realtime thread carried out
+  @ffi.Uint64()
+  external int releases;
+
+  /// Push time minus timestamp, taken on the producer thread.
+  @ffi.Int64()
+  external int max_delay_ns;
+
+  /// of the last delivered packet (activity)
+  @ffi.Uint32()
+  external int last_word0;
+
+  @ffi.Uint32()
+  external int reserved;
+
+  /// its timestamp
+  @ffi.Int64()
+  external int last_timestamp_ns;
+
+  @ffi.Array.multi([501])
+  external ffi.Array<ffi.Uint64> delay_histogram;
+
+  /// The output time of the event's frame minus its timestamp.
+  @ffi.Array.multi([1025])
+  external ffi.Array<ffi.Uint64> latency_histogram;
 }
 
 final class AudGraph extends ffi.Opaque {}
@@ -1392,6 +1668,63 @@ final class AudGraphStats extends ffi.Struct {
     ..ref.reserved2 = reserved2
     ..ref.realtime_violations = realtime_violations
     ..ref.messages_dropped = messages_dropped;
+}
+
+/// The timing as the last block saw it, for the control side: what a
+/// bridge needs to choose C = P + L + m of midi-003.
+final class AudGraphTiming extends ffi.Struct {
+  @ffi.Uint32()
+  external int struct_size;
+
+  /// AUD_TIMING_*
+  @ffi.Uint32()
+  external int flags;
+
+  @ffi.Double()
+  external double sample_rate;
+
+  /// the first frame of the last block
+  @ffi.Int64()
+  external int sample_position;
+
+  /// its fitted output time
+  @ffi.Int64()
+  external int host_time_ns;
+
+  /// of the last block
+  @ffi.Uint32()
+  external int frames;
+
+  /// The output latency the stream reported with the last block.
+  @ffi.Uint32()
+  external int output_latency_frames;
+
+  /// The longest time between the starts of two renders since the last
+  /// reset of the time filter, measured on the realtime thread; offline the
+  /// longest block since the reset. A diagnostic: one gap at start-up
+  /// ruins it, so a bridge takes P from the histogram below.
+  @ffi.Int64()
+  external int max_period_ns;
+
+  /// the prepared largest block over the rate
+  @ffi.Int64()
+  external int nominal_period_ns;
+
+  @ffi.Uint32()
+  external int time_filter_resets;
+
+  @ffi.Uint32()
+  external int reserved;
+
+  /// P: the times between the starts of two renders since the last reset
+  /// of the time filter, each render in one bin of AUD_GRAPH_PERIOD_BIN_NS
+  /// (offline: the block durations, so that offline stays deterministic).
+  /// A stream may split one callback into several renders; a high
+  /// percentile (p99.9) of the gaps is what a bridge takes as P. The bins
+  /// are relaxed counters, read after the snapshot: exact each on its own,
+  /// not consistent with the fields above.
+  @ffi.Array.multi([513])
+  external ffi.Array<ffi.Uint64> period_histogram;
 }
 
 /// The transport as the realtime thread last saw it.

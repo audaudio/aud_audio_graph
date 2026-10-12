@@ -15,6 +15,8 @@ import 'package:ffi/ffi.dart';
 
 import 'aud_audio_graph_bindings_generated.dart' as bindings;
 import 'aud_cache_usage.dart';
+import 'aud_event_source.dart';
+import 'aud_event_source_ffi.dart';
 import 'aud_graph.dart';
 import 'aud_graph_document.dart';
 import 'aud_graph_exception.dart';
@@ -25,6 +27,7 @@ import 'aud_graph_state.dart';
 import 'aud_graph_stats.dart';
 import 'aud_graph_transaction.dart';
 import 'aud_graph_native_conversions.dart';
+import 'aud_graph_timing.dart';
 import 'aud_graph_transport_state.dart';
 import 'aud_load.dart';
 import 'aud_node_message.dart';
@@ -601,6 +604,79 @@ class AudGraphFfi implements AudGraph {
     'cancel events',
   );
 
+  // ...........................................................................
+  // Event sources (ticket 26)
+
+  /// Creates an event source for [node]; [AudGraph.createEventSource] names
+  /// the arguments and what throws. The source is an [AudEventSourceFfi]
+  /// with the addresses a native producer needs.
+  @override
+  AudEventSourceFfi createEventSource(
+    AudNode node, {
+    int port = 0,
+    AudSourceTiming timing = AudSourceTiming.fixed,
+    int latencyNs = 0,
+    int capacity = 0,
+  }) {
+    final config = calloc<bindings.AudEventSourceConfig>();
+    final result = calloc<Int32>();
+    try {
+      config.ref
+        ..struct_size = sizeOf<bindings.AudEventSourceConfig>()
+        ..capacity = capacity
+        ..node = node.handle
+        ..port = port
+        ..timing = timing.code
+        ..latency_ns = latencyNs;
+      final pointer = bindings.aud_graph_create_event_source(
+        _pointer,
+        config,
+        result,
+      );
+      if (pointer == nullptr) {
+        AudGraphException.check(
+          result.value,
+          'create an event source for ${node.name}',
+        );
+      }
+      final source = AudEventSourceFfi(
+        graph: _pointer,
+        pointer: pointer,
+        node: node,
+        port: port,
+        timing: timing,
+        latencyNs: latencyNs,
+        onDispose: _sources.remove,
+      );
+      _sources.add(source);
+      return source;
+    } finally {
+      calloc.free(config);
+      calloc.free(result);
+    }
+  }
+
+  /// The event sources that are not disposed.
+  @override
+  List<AudEventSource> get eventSources => List.unmodifiable(_sources);
+
+  /// The timing of the engine as the last block saw it; `valid` is false
+  /// before a block rendered.
+  @override
+  AudGraphTiming get timing {
+    final native = calloc<bindings.AudGraphTiming>();
+    try {
+      native.ref.struct_size = sizeOf<bindings.AudGraphTiming>();
+      final result = bindings.aud_graph_timing(_pointer, native);
+      if (result != AUD_ERROR_STATE) {
+        AudGraphException.check(result, 'read the timing');
+      }
+      return native.ref.toDart();
+    } finally {
+      calloc.free(native);
+    }
+  }
+
   /// Applies the string setting [key] (its key or its id) to [node] on the
   /// calling thread. A value `asset:<id>` reaches the node as the path of
   /// the asset; an unknown asset throws an [ArgumentError]. Returns the id
@@ -902,6 +978,11 @@ class AudGraphFfi implements AudGraph {
     if (_listener != null) {
       bindings.aud_graph_set_listener(_pointer, nullptr, nullptr);
     }
+    // The engine frees the sources with the graph.
+    for (final source in _sources) {
+      source.markDisposed();
+    }
+    _sources.clear();
     bindings.aud_graph_destroy(_pointer);
     _pointer = nullptr;
     _listener?.close();
@@ -1214,6 +1295,7 @@ class AudGraphFfi implements AudGraph {
   final List<AudConnection> _connections = [];
   final List<AudEventConnection> _eventConnections = [];
   final List<(int, Completer<void>)> _waiting = [];
+  final List<AudEventSourceFfi> _sources = [];
   // Synchronous, so that a pump() delivers before it returns.
   final StreamController<AudGraphNotification> _notifications =
       StreamController.broadcast(sync: true);

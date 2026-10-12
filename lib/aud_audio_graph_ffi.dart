@@ -12,6 +12,7 @@ library;
 export 'aud_audio_graph.dart';
 export 'src/aud_audio_graph_bindings_generated.dart'
     show aud_graph_render, aud_graph_render_host;
+export 'src/aud_event_source_ffi.dart';
 export 'src/aud_graph_ffi.dart';
 export 'src/aud_graph_native_conversions.dart';
 export 'src/aud_host.dart';

@@ -101,6 +101,32 @@ final class AudNodeDoneNotification extends AudGraphNotification {
 }
 
 // #############################################################################
+/// A retired event source released the notes of its target and the
+/// realtime thread let go of it; the graph freed it (ticket 26).
+final class AudSourceDoneNotification extends AudGraphNotification {
+  /// Creates the notification.
+  const AudSourceDoneNotification({
+    required this.node,
+    required this.source,
+    required super.samplePosition,
+  });
+
+  /// The handle of the target node.
+  final int node;
+
+  /// The address the source had.
+  final int source;
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'sourceDone',
+    'node': node,
+    'source': source,
+    'samplePosition': samplePosition,
+  };
+}
+
+// #############################################################################
 /// A diagnostic of a block: late events, dropped entries, an overload, or
 /// what a node reported (ticket 25).
 final class AudDiagnosticNotification extends AudGraphNotification {

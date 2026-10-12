@@ -15,22 +15,21 @@ packages:
       path: "../../aud_audio_core"
       relative: true
     source: path
-    version: "0.5.0"
+    version: "0.5.1"
   aud_audio_graph:
     dependency: "direct main"
     description:
       path: ".."
       relative: true
     source: path
-    version: "0.4.0"
+    version: "0.5.0"
   aud_midi_standard:
     dependency: transitive
     description:
-      path: "."
-      resolved-ref: b45c6aa1cd74b7074be43ba0ff34fb939eec417d
-      tag-pattern: "{{version}}"
-      url: "https://github.com/audmidi/aud_midi_standard.git"
-    source: git
+      name: aud_midi_standard
+      sha256: "6ce86e854c3e2f510b6e48de194e4a1b020f2c4568e5fa52e464771847b6043e"
+      url: "https://pub.dev"
+    source: hosted
     version: "0.1.0"
   boolean_selector:
     dependency: transitive

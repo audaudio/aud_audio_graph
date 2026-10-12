@@ -189,8 +189,93 @@ void main() {
       });
     });
 
+    test('a retired event source', () {
+      native.ref
+        ..node = 4
+        ..value = 0xABCD;
+      final n =
+          parse(bindings.AUD_NOTIFY_SOURCE_DONE) as AudSourceDoneNotification;
+      expect(n.node, 4);
+      expect(n.source, 0xABCD);
+      expect(n.toJson()['type'], 'sourceDone');
+    });
+
     test('refuses an unknown type', () {
       expect(() => parse(99), throwsArgumentError);
+    });
+  });
+
+  group('event sources and timing (ticket 26)', () {
+    test('AudEventSourceStats.toDart() reads the counters', () {
+      final stats = calloc<bindings.AudEventSourceStats>();
+      stats.ref
+        ..attached = 1
+        ..pushed = 10
+        ..rejected = 1
+        ..delivered = 9
+        ..late = 2
+        ..max_late_ns = 3000
+        ..dropped = 1
+        ..reordered = 2
+        ..releases = 3
+        ..max_delay_ns = 4000
+        ..last_word0 = 0x20903C64
+        ..last_timestamp_ns = 5000;
+      stats.ref.delay_histogram[1] = 9;
+      stats.ref.latency_histogram[bindings.AUD_SOURCE_LATENCY_BINS] = 9;
+      final read = stats.ref.toDart();
+      calloc.free(stats);
+      expect(read.attached, isTrue);
+      expect(read.pushed, 10);
+      expect(read.rejected, 1);
+      expect(read.delivered, 9);
+      expect(read.late, 2);
+      expect(read.maxLateNs, 3000);
+      expect(read.dropped, 1);
+      expect(read.reordered, 2);
+      expect(read.releases, 3);
+      expect(read.maxDelayNs, 4000);
+      expect(read.lastWord0, 0x20903C64);
+      expect(read.lastTimestampNs, 5000);
+      expect(read.delayHistogram, hasLength(501));
+      expect(read.delayHistogram[1], 9);
+      expect(read.latencyHistogram, hasLength(1025));
+      expect(read.latencyHistogram.last, 9);
+      expect(read.delayMedianNs, 100000);
+      expect(read.latencyMedianNs, 1025 * 250000);
+    });
+
+    test('AudGraphTiming.toDart() reads the timing', () {
+      final timing = calloc<bindings.AudGraphTiming>();
+      timing.ref
+        ..flags = bindings.AUD_TIMING_VALID | bindings.AUD_TIMING_OFFLINE
+        ..sample_rate = 44100
+        ..sample_position = 1024
+        ..host_time_ns = 7
+        ..frames = 128
+        ..output_latency_frames = 441
+        ..max_period_ns = 9
+        ..nominal_period_ns = 8
+        ..time_filter_resets = 2
+        ..period_histogram[53] = 4
+        ..period_histogram[512] = 1;
+      final read = timing.ref.toDart();
+      calloc.free(timing);
+      expect(read.periodHistogram, hasLength(513));
+      expect(read.periodHistogram[53], 4);
+      expect(read.periodHistogram.last, 1);
+      expect(read.periodMedianNs, 5400000);
+      expect(read.periodP999Ns, 513 * 100000);
+      expect(read.valid, isTrue);
+      expect(read.offline, isTrue);
+      expect(read.sampleRate, 44100);
+      expect(read.samplePosition, 1024);
+      expect(read.hostTimeNs, 7);
+      expect(read.frames, 128);
+      expect(read.outputLatencyFrames, 441);
+      expect(read.maxPeriodNs, 9);
+      expect(read.nominalPeriodNs, 8);
+      expect(read.timeFilterResets, 2);
     });
   });
 

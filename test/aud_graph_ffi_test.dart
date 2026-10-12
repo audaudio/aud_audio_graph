@@ -94,6 +94,55 @@ void main() {
       );
     });
 
+    group('createEventSource(node, ...) and timing (ticket 26)', () {
+      test('creates sources for committed nodes and lists them', () {
+        final osc = oscillator();
+        graph
+          ..transaction((_) {})
+          ..start();
+        expect(graph.eventSources, isEmpty);
+        final source = graph.createEventSource(
+          osc,
+          timing: AudSourceTiming.immediate,
+          capacity: 8,
+        );
+        expect(graph.eventSources, [source]);
+        expect(source.node, osc);
+        expect(source.timing, AudSourceTiming.immediate);
+        expect(source.capacity, 8);
+        expect(
+          () => graph.createEventSource(osc, port: 7),
+          throwsA(isA<AudGraphException>()),
+        );
+        source.dispose();
+        expect(graph.eventSources, isEmpty);
+      });
+
+      test('disposing the graph disposes its sources', () {
+        final osc = oscillator();
+        graph
+          ..transaction((_) {})
+          ..start();
+        final source = graph.createEventSource(osc);
+        graph.dispose();
+        expect(source.isDisposed, isTrue);
+        expect(graph.eventSources, isEmpty);
+      });
+
+      test('reports the timing of the last block', () {
+        expect(graph.timing.valid, isFalse);
+        oscillator();
+        graph.start();
+        render(256);
+        final timing = graph.timing;
+        expect(timing.valid, isTrue);
+        expect(timing.offline, isTrue);
+        expect(timing.samplePosition + timing.frames, 256);
+        expect(timing.periodHistogram, hasLength(513));
+        expect(timing.periodP999Ns, isNotNull);
+      });
+    });
+
     group('createNode(typeId, ...)', () {
       test('creates and names instances', () {
         final first = graph.createNode('aud.graph.filter');

@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.5.1 - 2026-10-12
+
+### Added
+
+- Add event sources for native producers and the engine's timing
+
+- Event sources (interop-003): one lock-free queue per producer, drained after the scheduled events with peek and pop, the per-block budget and the note tracking
+
+- Timing policies fixed and immediate (midi-003); release flushes a source and closes its target's notes with sustain and soft pedal off
+
+- aud_graph_timing: the fitted output time, the reported output latency and the longest period for the control side
+
+- Retiring nodes keep their event routes until they are done, so their note offs arrive
+
+- Dart: AudEventSource, AudGraphTiming, AudSourceDoneNotification; native, stress and Dart tests; the example resolves core through its tag
+
+- Add aud_midi_standard from pub.dev
+
+- aud_midi_standard ^0.1.0 hosted for the tests, as the aud_midi family resolves it (ticket 26)
+
+- The example runs against the ticket's aud_audio_core again
+
+- Add a histogram of the render periods to the timing
+
+- AudGraphTiming carries the gaps between two renders in bins of 100 µs since the last reset of the time filter; offline the block durations
+
+- periodPercentileNs, periodMedianNs, periodP99Ns, periodP999Ns: P of midi-003 without the outliers that the longest gap keeps
+
+- Add the review fixes of the event sources and the timing
+
+- The gap that resets the time filter no longer enters the period histogram
+
+- A retired source frees its slot before it is let go; releases carry over a full block table
+
+- Zombie routes skip edges the transaction disconnected; the timing takes its last read
+
+- Add review fixes of ticket 26
+
+- A packet dropped for a target that takes no events spends the block's budget like a delivered one, in the drain and in the flush of a release
+
+- AudHistogram carries the percentile of the event source and the timing histograms
+
+- AudSourceTiming.fromCode throws an ArgumentError for an unknown code
+
+- liftPedal lifts one pedal of a channel; collectSources returns void
+
+- The capacity of a source is at most 2^20; the Dart example attaches, detaches, sets latencyNs and lists graph.eventSources
+
+- Statics after the public getters; the stress tests carry their numbers in AUD_CHECK_MSG instead of printing them
+
 ## 0.5.0 - 2026-10-12
 
 ### Added

@@ -57,6 +57,7 @@ struct Record {
   uint32_t port;
   uint32_t type;
   uint32_t word0;
+  uint32_t flags;
 };
 
 inline std::vector<Record> g_records;
@@ -85,7 +86,7 @@ inline void recorderProcess(void*, const AudProcessContext* context) {
   for (uint32_t i = 0; i < context->num_events; ++i) {
     const AudEvent& e = context->events[i];
     g_records.push_back({context->sample_position, e.sample_offset, e.port,
-                         e.type, e.words[0]});
+                         e.type, e.words[0], e.flags});
   }
   for (uint32_t b = 0; b < context->num_output_buses; ++b) {
     for (uint32_t c = 0; c < context->outputs[b].num_channels; ++c) {
@@ -783,6 +784,81 @@ inline AudEvent noteOff(uint32_t note, uint32_t port = 0, uint32_t channel = 0) 
   const uint32_t word = aud_ump_midi1_word(0, 0x80 | channel, note, 64);
   return aud_event_ump(&word, 1, 0, port);
 }
+
+// The word of a MIDI 1.0 control change.
+inline uint32_t ccWord(uint32_t controller, uint32_t value,
+                       uint32_t channel = 0, uint32_t group = 0) {
+  return aud_ump_midi1_word(group, 0xB0 | channel, controller, value);
+}
+
+// An event source on a node of the fixture (ticket 26).
+inline AudEventSource* makeSource(Fixture& f, int32_t node,
+                                  uint32_t timing = AUD_SOURCE_TIMING_FIXED,
+                                  int64_t latencyNs = 0, uint32_t capacity = 0,
+                                  uint32_t port = 0, int32_t* result = nullptr) {
+  AudEventSourceConfig config{};
+  config.struct_size = sizeof(AudEventSourceConfig);
+  config.capacity = capacity;
+  config.node = node;
+  config.port = port;
+  config.timing = timing;
+  config.latency_ns = latencyNs;
+  return aud_graph_create_event_source(f.graph, &config, result);
+}
+
+inline int32_t pushWord(AudEventSource* source, uint32_t word,
+                        int64_t hostTimeNs = 0) {
+  return aud_event_source_push(source, &word, 1, hostTimeNs);
+}
+
+inline AudEventSourceStats sourceStats(const AudEventSource* source) {
+  AudEventSourceStats s{};
+  s.struct_size = sizeof(AudEventSourceStats);
+  aud_event_source_stats(source, &s);
+  return s;
+}
+
+inline AudGraphTiming timingOf(const AudGraph* graph, int32_t* result = nullptr) {
+  AudGraphTiming t{};
+  t.struct_size = sizeof(AudGraphTiming);
+  const int32_t r = aud_graph_timing(graph, &t);
+  if (result != nullptr) *result = r;
+  return t;
+}
+
+// A stream with hardware host times on a straight line from `originNs`,
+// so that the filter of the graph maps sample positions exactly (ticket
+// 26). `at(frame)` is the host time of a frame; events are best stamped
+// half a frame early (`atFrame(n - 0.5)`), so that a nanosecond of
+// rounding never moves them to the next frame.
+struct TimedStream {
+  Fixture& f;
+  int64_t originNs;
+  int64_t position = 0;
+  AudStreamTime time{};
+
+  explicit TimedStream(Fixture& fixture, int64_t origin = 1000000000LL,
+                       uint32_t outputLatencyFrames = 480)
+      : f(fixture), originNs(origin) {
+    time.struct_size = sizeof(AudStreamTime);
+    time.sample_rate = kRate;
+    time.host_time_source = AUD_TIME_SOURCE_HARDWARE;
+    time.output_latency_frames = outputLatencyFrames;
+  }
+
+  int64_t atFrame(double frame) const {
+    return originNs + static_cast<int64_t>(std::llround(frame * 1e9 / kRate));
+  }
+
+  int32_t render(uint32_t frames) {
+    time.frames = frames;
+    time.sample_position = position;
+    time.host_time_ns = atFrame(static_cast<double>(position));
+    const int32_t result = f.render(frames, &time);
+    position += frames;
+    return result;
+  }
+};
 
 inline AudTimestamp atSample(int64_t position) {
   AudTimestamp t{};

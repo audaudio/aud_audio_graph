@@ -25,6 +25,7 @@
 
 #include "aud_abi.h"
 #include "aud_audio_graph.h"
+#include "aud_graph_event_source.hpp"
 #include "aud_semaphore.hpp"
 #include "aud_spsc_queue.hpp"
 #include "aud_time_filter.h"
@@ -536,6 +537,24 @@ struct BlockDiagnostics {
   uint32_t transportRefused = 0;
 };
 
+// ............................................................................
+// The timing of the engine for the control side (ticket 26): the realtime
+// thread writes it at the end of every block under a seqlock - the
+// generation is odd while it writes -, the fields are relaxed atomics so
+// that a torn read is no data race.
+struct TimingSnapshot {
+  std::atomic<uint32_t> generation{0};
+  std::atomic<uint32_t> flags{0};
+  std::atomic<double> sampleRate{0};
+  std::atomic<int64_t> samplePosition{0};
+  std::atomic<int64_t> hostTimeNs{0};
+  std::atomic<uint32_t> frames{0};
+  std::atomic<uint32_t> outputLatencyFrames{0};
+  std::atomic<int64_t> maxPeriodNs{0};
+  std::atomic<int64_t> nominalPeriodNs{0};
+  std::atomic<uint32_t> timeFilterResets{0};
+};
+
 }  // namespace aud
 
 // ............................................................................
@@ -568,9 +587,17 @@ struct AudGraph {
   aud::NodeInstance* creating = nullptr;
   std::vector<std::unique_ptr<aud::Edge>> edges;
   std::vector<std::unique_ptr<aud::Edge>> zombieEdges;
+  // The event connections of retiring emitters to living nodes: a
+  // retiring node keeps them until it is done, so that the note offs it
+  // forwards while it closes its notes arrive (ticket 26).
+  std::vector<aud::EventEdgeId> zombieEventEdges;
   aud::Topology topology;
   aud::Topology working;
   std::vector<int32_t> workingRemoved;
+  // The event connections the removals of the open transaction dropped:
+  // only these become routes of a retiring emitter, one the transaction
+  // disconnected itself does not (ticket 26).
+  std::vector<aud::EventEdgeId> workingDroppedEvents;
   bool transactionOpen = false;
   uint32_t nextRevision = 1;
   uint32_t outputLatency = 0;
@@ -594,6 +621,15 @@ struct AudGraph {
   // reserves one per event before the enqueue, the realtime thread gives it
   // back when the event leaves the queue or the scheduler (ticket 20).
   std::atomic<uint32_t> schedulerReserved{0};
+
+  // Event sources (ticket 26). The control thread owns the list and the
+  // slots; the realtime thread reads the slots at every block and nulls a
+  // slot once it let go of its retired source.
+  std::vector<std::unique_ptr<AudEventSource>> sources;
+  std::atomic<AudEventSource*> sourceSlots[aud::kMaxEventSources]{};
+  // Realtime thread: the order of the events the sources deliver, behind
+  // those of the queues at the same offset and rank.
+  uint64_t sourceSequence = uint64_t{1} << 62;
 
   // Notifications.
   std::unique_ptr<AudSpscQueue<AudGraphNotification>> notifications;
@@ -622,6 +658,15 @@ struct AudGraph {
   // block after the restart closes their tracked notes (ticket 20). The
   // control thread writes it before the state becomes running again.
   bool closeNotesPending = false;
+  // The timing for the control side (ticket 26), realtime thread: the
+  // start of the last render, the longest gap since the reset of the time
+  // filter and the histogram of the gaps - relaxed counters any thread
+  // reads, one bin per render.
+  int64_t lastRenderStartNs = 0;
+  bool lastRenderValid = false;
+  int64_t maxPeriodNs = 0;
+  std::atomic<uint64_t> periodHistogram[AUD_GRAPH_PERIOD_BINS + 1]{};
+  aud::TimingSnapshot timing;
 
   // Transport, realtime thread, published through atomics.
   aud::InternalTransport transport;

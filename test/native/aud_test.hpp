@@ -5,8 +5,9 @@
 // found in the LICENSE file in the root of this package.
 
 // A tiny test harness for the native tests: AUD_TEST registers a test,
-// AUD_CHECK records a failure with its location, the runner prints the
-// summary and returns the failure count. AUD_TEST_FILTER in the
+// AUD_CHECK records a failure with its location, AUD_CHECK_MSG with a
+// message of the test's own, the runner prints the summary and returns
+// the failure count. AUD_TEST_FILTER in the
 // environment runs only the tests whose name contains it.
 
 #ifndef AUD_TEST_HPP
@@ -102,6 +103,13 @@ inline int run() {
 #define AUD_CHECK(expression)                                   \
   do {                                                          \
     if (!(expression)) aud_test::fail(#expression, __FILE__, __LINE__); \
+  } while (0)
+
+// A check that reports `message` - what the run saw - instead of the
+// expression.
+#define AUD_CHECK_MSG(expression, message)                            \
+  do {                                                                \
+    if (!(expression)) aud_test::fail((message), __FILE__, __LINE__); \
   } while (0)
 
 #define AUD_CHECK_NEAR(a, b, tolerance) \

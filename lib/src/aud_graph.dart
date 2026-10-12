@@ -10,6 +10,7 @@ import 'dart:typed_data';
 import 'package:aud_audio_core/aud_audio_core.dart';
 
 import 'aud_cache_usage.dart';
+import 'aud_event_source.dart';
 import 'aud_graph_document.dart';
 import 'aud_graph_factory_stub.dart'
     if (dart.library.ffi) 'aud_graph_factory_native.dart'
@@ -19,6 +20,7 @@ import 'aud_graph_notification.dart';
 import 'aud_graph_options.dart';
 import 'aud_graph_state.dart';
 import 'aud_graph_stats.dart';
+import 'aud_graph_timing.dart';
 import 'aud_graph_transaction.dart';
 import 'aud_graph_transport_state.dart';
 import 'aud_load.dart';
@@ -248,6 +250,34 @@ abstract interface class AudGraph {
   /// Cancels waiting events: those with [id], or all of [node] when [id] is
   /// 0, or every waiting event without both.
   void cancel({AudNode? node, int id = 0});
+
+  // ...........................................................................
+  // Event sources (interop-003, midi-003, ticket 26)
+
+  /// Creates an event source for the event input [port] of the committed
+  /// [node]: a lock-free queue one producer at a time fills with UMP
+  /// packets and host timestamps, which the realtime thread drains every
+  /// block under [timing], with the latency [latencyNs] (C of
+  /// [AudSourceTiming.fixed]) and a queue of [capacity] packets (0: 4096,
+  /// rounded up to a power of two). Throws an [AudGraphException]:
+  /// `AUD_ERROR_STATE` for a node that has not been committed,
+  /// `AUD_ERROR_RETIRED` for a removed one, `AUD_ERROR_INVALID_ARGUMENT`
+  /// for [io] or a port beyond the node's event inputs, `AUD_ERROR_CAPACITY`
+  /// beyond 64 sources.
+  AudEventSource createEventSource(
+    AudNode node, {
+    int port = 0,
+    AudSourceTiming timing = AudSourceTiming.fixed,
+    int latencyNs = 0,
+    int capacity = 0,
+  });
+
+  /// The event sources that are not disposed.
+  List<AudEventSource> get eventSources;
+
+  /// The timing of the engine as the last block saw it; `valid` is false
+  /// before a block rendered.
+  AudGraphTiming get timing;
 
   /// Applies the string setting [key] (its key or its id) to [node] on the
   /// calling thread. A value `asset:<id>` reaches the node as the path of
