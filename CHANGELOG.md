@@ -7,10 +7,19 @@
 - Add event sources for native producers and the engine's timing
 
 - Event sources (interop-003): one lock-free queue per producer, drained after the scheduled events with peek and pop, the per-block budget and the note tracking
+
 - Timing policies fixed and immediate (midi-003); release flushes a source and closes its target's notes with sustain and soft pedal off
+
 - aud_graph_timing: the fitted output time, the reported output latency and the longest period for the control side
+
 - Retiring nodes keep their event routes until they are done, so their note offs arrive
+
 - Dart: AudEventSource, AudGraphTiming, AudSourceDoneNotification; native, stress and Dart tests; the example resolves core through its tag
+
+- Add aud_midi_standard from pub.dev
+
+- aud_midi_standard ^0.1.0 hosted for the tests, as the aud_midi family resolves it (ticket 26)
+- The example runs against the ticket's aud_audio_core again
 
 ## 0.5.0 - 2026-10-12
 
