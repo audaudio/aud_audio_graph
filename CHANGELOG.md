@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.2 - 2026-10-14
 
 ### Added
 
@@ -29,9 +29,13 @@
 - Add the fixes of the review of the load gauge
 
 - AudGraph.renderLoad takes named arguments window and bufferFrames, documented
+
 - The runs over the device buffer in a function of their own; the overload check under one test of a live render
+
 - Compile-time checks that the ring takes no lock and that a tag tells the laps apart
+
 - The window of AudGraphLoad may be up to one render longer than asked
+
 - The README examples compile; the p99 of 47 voices on the Galaxy Tab S4 is 1.29
 
 ## 0.5.1 - 2026-10-12
@@ -83,7 +87,6 @@
 - The capacity of a source is at most 2^20; the Dart example attaches, detaches, sets latencyNs and lists graph.eventSources
 
 - Statics after the public getters; the stress tests carry their numbers in AUD_CHECK_MSG instead of printing them
-
 
 ## 0.5.0 - 2026-10-12
 
@@ -153,7 +156,6 @@
 
 - The error tests check the type and the message; AudCacheUsage and AudNodeMessage get their landmarks
 
-
 ## 0.4.0 - 2026-10-09
 
 ### Changed
@@ -188,7 +190,6 @@
 - Refuse descriptors without parameter or string ids
 
 - Add AudHost and the asset table of the graph document on the Dart side
-
 
 ## 0.2.0 - 2026-10-08
 
