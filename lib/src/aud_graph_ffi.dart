@@ -20,6 +20,7 @@ import 'aud_event_source_ffi.dart';
 import 'aud_graph.dart';
 import 'aud_graph_document.dart';
 import 'aud_graph_exception.dart';
+import 'aud_graph_load.dart';
 import 'aud_graph_node.dart';
 import 'aud_graph_notification.dart';
 import 'aud_graph_options.dart';
@@ -1115,9 +1116,35 @@ class AudGraphFfi implements AudGraph {
     }
   }
 
-  /// Zeroes the counters.
+  /// Zeroes the counters; [renderLoad] stays.
   @override
   void resetStats() => bindings.aud_graph_reset_stats(_pointer);
+
+  /// The load of the engine over the newest live renders that cover
+  /// [window] and over the runs that fill [bufferFrames] (ticket 29); see
+  /// [AudGraph.renderLoad].
+  @override
+  AudGraphLoad renderLoad([
+    Duration window = const Duration(seconds: 1),
+    int bufferFrames = 0,
+  ]) {
+    final native = calloc<bindings.AudGraphLoad>();
+    try {
+      native.ref.struct_size = sizeOf<bindings.AudGraphLoad>();
+      AudGraphException.check(
+        bindings.aud_graph_render_load(
+          _pointer,
+          window.inMicroseconds * 1000,
+          bufferFrames.clamp(0, 0xFFFFFFFF),
+          native,
+        ),
+        'read the render load',
+      );
+      return native.ref.toDart();
+    } finally {
+      calloc.free(native);
+    }
+  }
 
   /// Whether the native library carries the debug watchdog of the realtime
   /// thread: a build hook compiles it in when the app sets the user define

@@ -279,6 +279,44 @@ void main() {
     });
   });
 
+  group('the render load (ticket 29)', () {
+    test('AudGraphLoad.toDart() reads the gauge', () {
+      final load = calloc<bindings.AudGraphLoad>();
+      load.ref
+        ..renders = 188
+        ..frames = 48128
+        ..window_ns = 1002666667
+        ..mean = 0.25
+        ..p99 = 0.5
+        ..max = 1.25
+        ..renders_total = 5000
+        ..overloads_total = 2
+        ..buffer_frames = 384
+        ..buffer_overloads = 1
+        ..buffer_p99 = 0.75
+        ..buffer_max = 1.05;
+      final read = load.ref.toDart();
+      calloc.free(load);
+      expect(
+        read,
+        const AudGraphLoad(
+          window: Duration(microseconds: 1002667),
+          renders: 188,
+          frames: 48128,
+          mean: 0.25,
+          p99: 0.5,
+          max: 1.25,
+          rendersTotal: 5000,
+          overloadsTotal: 2,
+          bufferFrames: 384,
+          bufferOverloads: 1,
+          bufferP99: 0.75,
+          bufferMax: 1.05,
+        ),
+      );
+    });
+  });
+
   group('loads, usage and messages (ticket 25)', () {
     test('AudLoadInfo.toDart() reads a load with its texts', () {
       final info = calloc<bindings.AudLoadInfo>();

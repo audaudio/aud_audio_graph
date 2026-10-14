@@ -467,6 +467,30 @@ external int aud_graph_render_host(
   ffi.Pointer<AudHostRenderRequest> request,
 );
 
+/// [any thread but the realtime thread] Reads the gauge over the newest
+/// renders whose frames cover `window_ns` at the sample rate of the newest
+/// render - walking back from it until they do, the ring ends or a slot was
+/// overwritten meanwhile; `window_ns` <= 0 reads the whole ring - and over
+/// the runs of renders that fill `buffer_frames` (ticket 29). A window
+/// without renders reads zeros. The calling thread copies the shares of the
+/// window to find their percentiles - without allocation, but not on the
+/// realtime thread. AUD_ERROR_INVALID_ARGUMENT for a NULL argument or a
+/// short struct.
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<AudGraph>,
+    ffi.Int64,
+    ffi.Uint32,
+    ffi.Pointer<AudGraphLoad>,
+  )
+>()
+external int aud_graph_render_load(
+  ffi.Pointer<AudGraph> graph,
+  int window_ns,
+  int buffer_frames,
+  ffi.Pointer<AudGraphLoad> load,
+);
+
 /// [control] Renders offline on the calling thread while no stream renders;
 /// the graph has to be running.
 @ffi.Native<
@@ -477,7 +501,8 @@ external int aud_graph_render_offline(
   ffi.Pointer<AudOfflineRequest> request,
 );
 
-/// [control] Zeroes the counters; the realtime thread keeps counting.
+/// [control] Zeroes the counters; the realtime thread keeps counting. The
+/// load gauge stays (aud_graph_render_load).
 @ffi.Native<ffi.Void Function(ffi.Pointer<AudGraph>)>()
 external void aud_graph_reset_stats(ffi.Pointer<AudGraph> graph);
 
@@ -1040,6 +1065,8 @@ const String AUD_GRAPH_FILTER_TYPE_ID = 'aud.graph.filter';
 
 const String AUD_GRAPH_INTERNAL_TRANSPORT_ID = 'aud.graph.transport';
 
+const int AUD_GRAPH_LOAD_RENDERS = 1024;
+
 const int AUD_GRAPH_MAX_EVENT_SOURCES = 64;
 
 const int AUD_GRAPH_MAX_MESSAGE_ARGS = 16;
@@ -1198,7 +1225,7 @@ final class AudEventSourceConfig extends ffi.Struct {
   @ffi.Uint32()
   external int struct_size;
 
-  /// events; rounded up to a power of two; 0: 4096
+  /// events; rounded up to a power of two, at most 2^20; 0: 4096
   @ffi.Uint32()
   external int capacity;
 
@@ -1465,6 +1492,92 @@ typedef AudGraphListenerFunction =
     ffi.Void Function(ffi.Pointer<ffi.Void> user);
 typedef DartAudGraphListenerFunction =
     void Function(ffi.Pointer<ffi.Void> user);
+
+/// A reading of the gauge over a window of the newest renders. A share of 1
+/// is a render that took as long as its block.
+final class AudGraphLoad extends ffi.Struct {
+  @ffi.Uint32()
+  external int struct_size;
+
+  /// in the window
+  @ffi.Uint32()
+  external int renders;
+
+  /// of the renders in the window
+  @ffi.Uint64()
+  external int frames;
+
+  /// these frames at the sample rate of the newest render
+  @ffi.Int64()
+  external int window_ns;
+
+  /// The shares weighted by the frames: the sum of share x frames over the
+  /// sum of the frames, the render time of the window over its duration.
+  @ffi.Double()
+  external double mean;
+
+  /// nearest rank: 99 % of the renders took at most this share
+  @ffi.Double()
+  external double p99;
+
+  /// the largest share
+  @ffi.Double()
+  external double max;
+
+  /// live renders since the graph was created
+  @ffi.Uint64()
+  external int renders_total;
+
+  /// of them, the ones longer than their block
+  @ffi.Uint64()
+  external int overloads_total;
+
+  /// as asked; at most one block: one render a run
+  @ffi.Uint32()
+  external int buffer_frames;
+
+  /// runs in the window longer than they last
+  @ffi.Uint32()
+  external int buffer_overloads;
+
+  /// nearest rank over the runs of the window
+  @ffi.Double()
+  external double buffer_p99;
+
+  /// the largest share of a run
+  @ffi.Double()
+  external double buffer_max;
+
+  static ffi.Pointer<AudGraphLoad> $allocate(
+    ffi.Allocator $allocator, {
+    required int struct_size,
+    required int renders,
+    required int frames,
+    required int window_ns,
+    required double mean,
+    required double p99,
+    required double max,
+    required int renders_total,
+    required int overloads_total,
+    required int buffer_frames,
+    required int buffer_overloads,
+    required double buffer_p99,
+    required double buffer_max,
+  }) => $allocator<AudGraphLoad>()
+    ..ref.struct_size = struct_size
+    ..ref.renders = renders
+    ..ref.frames = frames
+    ..ref.window_ns = window_ns
+    ..ref.mean = mean
+    ..ref.p99 = p99
+    ..ref.max = max
+    ..ref.renders_total = renders_total
+    ..ref.overloads_total = overloads_total
+    ..ref.buffer_frames = buffer_frames
+    ..ref.buffer_overloads = buffer_overloads
+    ..ref.buffer_p99 = buffer_p99
+    ..ref.buffer_max = buffer_max;
+}
 
 /// A message a node sent. `data` holds the path with its terminator, then
 /// per argument its OSC type tag (one byte) and its value in little endian:

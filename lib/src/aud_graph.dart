@@ -15,6 +15,7 @@ import 'aud_graph_document.dart';
 import 'aud_graph_factory_stub.dart'
     if (dart.library.ffi) 'aud_graph_factory_native.dart'
     as platform;
+import 'aud_graph_load.dart';
 import 'aud_graph_node.dart';
 import 'aud_graph_notification.dart';
 import 'aud_graph_options.dart';
@@ -430,8 +431,22 @@ abstract interface class AudGraph {
   /// A snapshot of the counters.
   AudGraphStats get stats;
 
-  /// Zeroes the counters.
+  /// Zeroes the counters; [renderLoad] stays.
   void resetStats();
+
+  /// The load of the engine over the newest live renders that cover
+  /// [window] (ticket 29): the mean, the 99th percentile and the largest
+  /// share of its block a render took, and the renders and overloads since
+  /// the graph was created; and the same over the runs of renders that
+  /// fill the device buffer of [bufferFrames], which tell when the stream
+  /// drops out ([AudGraphLoad.bufferP99]). The gauge keeps the last
+  /// [AudGraphLoad.maxRenders] renders, records no offline render and is
+  /// not touched by [resetStats]; a zero or negative [window] reads all it
+  /// keeps, a window without renders reads zeros. Not on the audio thread.
+  AudGraphLoad renderLoad([
+    Duration window = const Duration(seconds: 1),
+    int bufferFrames = 0,
+  ]);
 
   /// The sample position of the next block.
   int get samplePosition;

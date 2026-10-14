@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Add a load gauge over the last renders
+
+- The share of its block that each live render took, in a lock-free ring of the last 1024 renders on the audio thread
+- aud_graph_render_load, AudGraphLoad and AUD_GRAPH_LOAD_RENDERS: renders, frames, duration, mean, p99 and maximum of a window, the live renders and overloads since the graph was created
+- The p99, the maximum and the overloads of the runs of renders that fill the device buffer
+- The gauge stays apart from aud_graph_reset_stats; offline renders are not recorded
+- AudGraph.renderLoad(window, bufferFrames) and the value class AudGraphLoad
+- Native tests of the window, the wrap, overwritten slots, the runs, offline renders, a slow node and a reader while the audio thread renders
+- The bindings and the ABI constants generated again; the gauge in the READMEs and the index
+
 ## 0.5.1 - 2026-10-12
 
 ### Added
@@ -49,6 +63,7 @@
 - The capacity of a source is at most 2^20; the Dart example attaches, detaches, sets latencyNs and lists graph.eventSources
 
 - Statics after the public getters; the stress tests carry their numbers in AUD_CHECK_MSG instead of printing them
+
 
 ## 0.5.0 - 2026-10-12
 
@@ -118,6 +133,7 @@
 
 - The error tests check the type and the message; AudCacheUsage and AudNodeMessage get their landmarks
 
+
 ## 0.4.0 - 2026-10-09
 
 ### Changed
@@ -152,6 +168,7 @@
 - Refuse descriptors without parameter or string ids
 
 - Add AudHost and the asset table of the graph document on the Dart side
+
 
 ## 0.2.0 - 2026-10-08
 

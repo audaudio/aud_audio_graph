@@ -21,6 +21,7 @@ const int AUD_GRAPH_ERROR_REALTIME_VIOLATION = -100;
 const String AUD_GRAPH_FEEDBACK_TYPE_ID = 'aud.graph.feedback';
 const String AUD_GRAPH_FILTER_TYPE_ID = 'aud.graph.filter';
 const String AUD_GRAPH_INTERNAL_TRANSPORT_ID = 'aud.graph.transport';
+const int AUD_GRAPH_LOAD_RENDERS = 1024;
 const int AUD_GRAPH_MAX_EVENT_SOURCES = 64;
 const int AUD_GRAPH_MAX_MESSAGE_ARGS = 16;
 const int AUD_GRAPH_MAX_TEXT = 256;

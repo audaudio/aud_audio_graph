@@ -713,6 +713,66 @@ AUD_EXPORT int32_t aud_graph_timing(const AudGraph* graph,
                                     AudGraphTiming* timing);
 
 // ............................................................................
+// The render load of the engine (ticket 29)
+//
+// Not the loads of files (see Loads): the share of its block that each live
+// render took - its render time over the time its frames last at the
+// sample rate, the two numbers the overload diagnostic compares - for the
+// last AUD_GRAPH_LOAD_RENDERS renders, in a lock-free ring the realtime
+// thread writes without allocation or lock. Offline renders are not
+// recorded. aud_graph_reset_stats leaves the gauge alone, so a governor
+// reads it while tests and tools reset the counters.
+//
+// A slot holds the share as a float, the frames - a block of more than
+// 65535 frames counts as 65535 - and a tag of the render's index, so that
+// a reader tells a slot the realtime thread overwrote meanwhile from the
+// render it wants and stops there.
+
+// The live renders the gauge keeps.
+#define AUD_GRAPH_LOAD_RENDERS 1024
+
+// A reading of the gauge over a window of the newest renders. A share of 1
+// is a render that took as long as its block.
+typedef struct AudGraphLoad {
+  uint32_t struct_size;
+  uint32_t renders;   // in the window
+  uint64_t frames;    // of the renders in the window
+  int64_t window_ns;  // these frames at the sample rate of the newest render
+  // The shares weighted by the frames: the sum of share x frames over the
+  // sum of the frames, the render time of the window over its duration.
+  double mean;
+  double p99;  // nearest rank: 99 % of the renders took at most this share
+  double max;  // the largest share
+  uint64_t renders_total;    // live renders since the graph was created
+  uint64_t overloads_total;  // of them, the ones longer than their block
+  // The load of the device buffer: a stream whose buffer holds several
+  // renders plays on when one render takes longer than its block and the
+  // next ones catch up; it drops out when the renders that fill a buffer
+  // take longer than the buffer lasts. A run is a render of the window and
+  // the older ones before it whose frames reach `buffer_frames` - one run
+  // per render, so the runs overlap -; its share is their render time over
+  // their duration. Runs that reach past the window do not count.
+  uint32_t buffer_frames;     // as asked; at most one block: one render a run
+  uint32_t buffer_overloads;  // runs in the window longer than they last
+  double buffer_p99;          // nearest rank over the runs of the window
+  double buffer_max;          // the largest share of a run
+} AudGraphLoad;
+
+// [any thread but the realtime thread] Reads the gauge over the newest
+// renders whose frames cover `window_ns` at the sample rate of the newest
+// render - walking back from it until they do, the ring ends or a slot was
+// overwritten meanwhile; `window_ns` <= 0 reads the whole ring - and over
+// the runs of renders that fill `buffer_frames` (ticket 29). A window
+// without renders reads zeros. The calling thread copies the shares of the
+// window to find their percentiles - without allocation, but not on the
+// realtime thread. AUD_ERROR_INVALID_ARGUMENT for a NULL argument or a
+// short struct.
+AUD_EXPORT int32_t aud_graph_render_load(const AudGraph* graph,
+                                         int64_t window_ns,
+                                         uint32_t buffer_frames,
+                                         AudGraphLoad* load);
+
+// ............................................................................
 // Rendering
 
 // [realtime] Renders one block into the host's buses: the render function
@@ -762,7 +822,8 @@ AUD_EXPORT int32_t aud_graph_tap_meter(AudGraph* graph, int32_t node,
 // [control] Copies the counters.
 AUD_EXPORT int32_t aud_graph_get_stats(AudGraph* graph, AudGraphStats* stats);
 
-// [control] Zeroes the counters; the realtime thread keeps counting.
+// [control] Zeroes the counters; the realtime thread keeps counting. The
+// load gauge stays (aud_graph_render_load).
 AUD_EXPORT void aud_graph_reset_stats(AudGraph* graph);
 
 // ............................................................................

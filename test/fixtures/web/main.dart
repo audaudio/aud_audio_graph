@@ -14,6 +14,7 @@ import 'package:aud_audio_graph/aud_audio_graph.dart';
 void main() {
   print(const AudGraphOptions().toJson());
   print(AudGraphState.running);
+  print(const AudGraphLoad().toJson());
   try {
     AudGraph().dispose();
   } on UnsupportedError catch (e) {
