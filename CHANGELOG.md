@@ -24,6 +24,8 @@
 
 - The example takes aud_audio_core from its git tag instead of a sibling checkout that a ticket may not have
 
+- Add helix ^1.12.0 to the dev dependencies
+
 ## 0.5.1 - 2026-10-12
 
 ### Added
