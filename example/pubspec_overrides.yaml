@@ -1,5 +1,7 @@
-# The example runs against the sibling checkouts of the ticket, so that it
-# sees the unreleased versions of the family (ticket 22).
+# The example plays the package of this checkout and resolves the rest of
+# the family from its git tags and pub.dev, like an app does. A ticket that
+# changes a sibling as well adds its checkout here as a path override while
+# it runs; overrides of checkouts a ticket does not have break pub get.
 dependency_overrides:
-  aud_audio_core:
-    path: ../../aud_audio_core
+  aud_audio_graph:
+    path: ..

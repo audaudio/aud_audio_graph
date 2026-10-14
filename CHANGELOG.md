@@ -7,12 +7,22 @@
 - Add a load gauge over the last renders
 
 - The share of its block that each live render took, in a lock-free ring of the last 1024 renders on the audio thread
+
 - aud_graph_render_load, AudGraphLoad and AUD_GRAPH_LOAD_RENDERS: renders, frames, duration, mean, p99 and maximum of a window, the live renders and overloads since the graph was created
+
 - The p99, the maximum and the overloads of the runs of renders that fill the device buffer
+
 - The gauge stays apart from aud_graph_reset_stats; offline renders are not recorded
+
 - AudGraph.renderLoad(window, bufferFrames) and the value class AudGraphLoad
+
 - Native tests of the window, the wrap, overwritten slots, the runs, offline renders, a slow node and a reader while the audio thread renders
+
 - The bindings and the ABI constants generated again; the gauge in the READMEs and the index
+
+- Add an example that resolves outside a full ticket
+
+- The example takes aud_audio_core from its git tag instead of a sibling checkout that a ticket may not have
 
 ## 0.5.1 - 2026-10-12
 
