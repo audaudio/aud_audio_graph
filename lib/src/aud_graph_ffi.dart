@@ -1124,10 +1124,10 @@ class AudGraphFfi implements AudGraph {
   /// [window] and over the runs that fill [bufferFrames] (ticket 29); see
   /// [AudGraph.renderLoad].
   @override
-  AudGraphLoad renderLoad([
+  AudGraphLoad renderLoad({
     Duration window = const Duration(seconds: 1),
     int bufferFrames = 0,
-  ]) {
+  }) {
     final native = calloc<bindings.AudGraphLoad>();
     try {
       native.ref.struct_size = sizeOf<bindings.AudGraphLoad>();

@@ -26,6 +26,14 @@
 
 - Add helix ^1.12.0 to the dev dependencies
 
+- Add the fixes of the review of the load gauge
+
+- AudGraph.renderLoad takes named arguments window and bufferFrames, documented
+- The runs over the device buffer in a function of their own; the overload check under one test of a live render
+- Compile-time checks that the ring takes no lock and that a tag tells the laps apart
+- The window of AudGraphLoad may be up to one render longer than asked
+- The README examples compile; the p99 of 47 voices on the Galaxy Tab S4 is 1.29
+
 ## 0.5.1 - 2026-10-12
 
 ### Added

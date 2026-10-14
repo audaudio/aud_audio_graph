@@ -32,6 +32,40 @@ float p99Of(float* values, uint32_t count) {
   return values[rank - 1];
 }
 
+// The runs of a window: how many, how many took longer than they last and
+// the largest share.
+struct Runs {
+  uint32_t count = 0;
+  uint32_t overloads = 0;
+  float max = 0;
+};
+
+// The runs that fill `bufferFrames` over the `count` renders of a window,
+// newest first: each render and the older ones before it until their
+// frames reach it; a run that reaches past the window ends the walk.
+// Writes the shares of the runs to `runs`.
+Runs runsOf(const float* shares, const uint32_t* frames, uint32_t count,
+            uint32_t bufferFrames, float* runs) {
+  Runs result;
+  for (uint32_t first = 0; first < count; ++first) {
+    uint64_t runFrames = 0;
+    double runWeighted = 0;
+    uint32_t last = first;
+    for (; last < count; ++last) {
+      runFrames += frames[last];
+      runWeighted += static_cast<double>(shares[last]) * frames[last];
+      if (runFrames >= bufferFrames) break;
+    }
+    if (last == count || runFrames == 0) break;
+    const float run =
+        static_cast<float>(runWeighted / static_cast<double>(runFrames));
+    runs[result.count++] = run;
+    result.max = std::max(result.max, run);
+    if (run > 1.0f) result.overloads += 1;
+  }
+  return result;
+}
+
 }  // namespace
 
 void LoadGauge::readFrom(uint64_t renders, uint64_t overloads,
@@ -67,28 +101,9 @@ void LoadGauge::readFrom(uint64_t renders, uint64_t overloads,
     weighted += static_cast<double>(share) * slotFrames;
     max = std::max(max, share);
   }
-  // The runs that fill the device buffer: each render and the older ones
-  // before it until their frames reach it, within the window.
   std::array<float, kSlots> runs;
-  uint32_t numRuns = 0;
-  uint32_t bufferOverloads = 0;
-  float bufferMax = 0;
-  for (uint32_t first = 0; first < count; ++first) {
-    uint64_t runFrames = 0;
-    double runWeighted = 0;
-    uint32_t last = first;
-    for (; last < count; ++last) {
-      runFrames += framesOfRender[last];
-      runWeighted += static_cast<double>(shares[last]) * framesOfRender[last];
-      if (runFrames >= bufferFrames) break;
-    }
-    if (last == count || runFrames == 0) break;
-    const float run =
-        static_cast<float>(runWeighted / static_cast<double>(runFrames));
-    runs[numRuns++] = run;
-    bufferMax = std::max(bufferMax, run);
-    if (run > 1.0f) bufferOverloads += 1;
-  }
+  const Runs buffer = runsOf(shares.data(), framesOfRender.data(), count,
+                             bufferFrames, runs.data());
   load->renders = count;
   load->frames = frames;
   load->window_ns =
@@ -101,9 +116,9 @@ void LoadGauge::readFrom(uint64_t renders, uint64_t overloads,
   load->renders_total = renders;
   load->overloads_total = overloads;
   load->buffer_frames = bufferFrames;
-  load->buffer_overloads = bufferOverloads;
-  load->buffer_p99 = p99Of(runs.data(), numRuns);
-  load->buffer_max = bufferMax;
+  load->buffer_overloads = buffer.overloads;
+  load->buffer_p99 = p99Of(runs.data(), buffer.count);
+  load->buffer_max = buffer.max;
 }
 
 }  // namespace aud

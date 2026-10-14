@@ -321,7 +321,7 @@ void main() {
       );
     });
 
-    group('renderLoad(window, bufferFrames) (ticket 29)', () {
+    group('renderLoad({window, bufferFrames}) (ticket 29)', () {
       // Renders live blocks through the render function of a stream, as
       // aud_audio_io calls it.
       void renderLive(int blocks, int frames) {
@@ -353,7 +353,7 @@ void main() {
 
       test('reads zeros before a render', () {
         expect(graph.renderLoad(), const AudGraphLoad());
-        expect(graph.renderLoad(Duration.zero), const AudGraphLoad());
+        expect(graph.renderLoad(window: Duration.zero), const AudGraphLoad());
       });
 
       test('reads the live renders of the window, not the offline ones', () {
@@ -370,10 +370,12 @@ void main() {
         expect(second.mean, lessThanOrEqualTo(second.max));
         expect(second.rendersTotal, 300);
         expect(second.overloadsTotal, graph.stats.overloads);
-        final short = graph.renderLoad(const Duration(milliseconds: 100));
+        final short = graph.renderLoad(
+          window: const Duration(milliseconds: 100),
+        );
         expect(short.renders, 20);
         expect(short.window, const Duration(milliseconds: 100));
-        final all = graph.renderLoad(Duration.zero);
+        final all = graph.renderLoad(window: Duration.zero);
         expect(all.renders, 300);
         expect(all.window, const Duration(milliseconds: 1500));
         expect(graph.stats.blocksRendered, 300 + 4);
@@ -382,16 +384,24 @@ void main() {
       test('reads the runs that fill a device buffer', () {
         graph.start();
         renderLive(100, 240);
-        final perRender = graph.renderLoad(Duration.zero);
+        final perRender = graph.renderLoad(window: Duration.zero);
         expect(perRender.bufferFrames, 0);
         expect(perRender.bufferP99, perRender.p99);
         expect(perRender.bufferMax, perRender.max);
-        final buffer = graph.renderLoad(Duration.zero, 960);
+        final buffer = graph.renderLoad(
+          window: Duration.zero,
+          bufferFrames: 960,
+        );
         expect(buffer.bufferFrames, 960);
         // A run of four renders lasts no longer than its longest render.
         expect(buffer.bufferMax, lessThanOrEqualTo(perRender.max));
         expect(buffer.bufferOverloads, lessThanOrEqualTo(perRender.renders));
-        expect(graph.renderLoad(Duration.zero, -5).bufferFrames, 0);
+        expect(
+          graph
+              .renderLoad(window: Duration.zero, bufferFrames: -5)
+              .bufferFrames,
+          0,
+        );
       });
 
       test('stays when the counters are reset', () {
@@ -399,7 +409,7 @@ void main() {
         renderLive(10, 256);
         graph.resetStats();
         expect(graph.stats.blocksRendered, 0);
-        final load = graph.renderLoad(Duration.zero);
+        final load = graph.renderLoad(window: Duration.zero);
         expect(load.renders, 10);
         expect(load.rendersTotal, 10);
       });

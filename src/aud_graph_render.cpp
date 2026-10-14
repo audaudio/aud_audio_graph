@@ -2373,14 +2373,14 @@ int32_t renderBlock(AudGraph* graph,
   // overload diagnostic, of live renders only.
   if (!graph->offline) {
     graph->loadGauge.record(elapsed, budget, frames, graph->sampleRate);
-  }
-  if (!graph->offline && elapsed > budget) {
-    graph->overloads.fetch_add(1, std::memory_order_relaxed);
-    AudGraphNotification n = makeNotification(graph, AUD_NOTIFY_DIAGNOSTIC);
-    n.code = AUD_ERROR_OVERLOAD;
-    n.count = 1;
-    n.value = elapsed;
-    notify(graph, n);
+    if (elapsed > budget) {
+      graph->overloads.fetch_add(1, std::memory_order_relaxed);
+      AudGraphNotification n = makeNotification(graph, AUD_NOTIFY_DIAGNOSTIC);
+      n.code = AUD_ERROR_OVERLOAD;
+      n.count = 1;
+      n.value = elapsed;
+      notify(graph, n);
+    }
   }
   if (graph->blockNotified) wakeListener(graph);
   return AUD_OK;

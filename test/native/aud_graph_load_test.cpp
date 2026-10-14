@@ -12,7 +12,6 @@
 // node, a reader while the audio thread renders.
 
 #include <atomic>
-#include <cstring>
 #include <thread>
 #include <vector>
 

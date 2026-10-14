@@ -171,7 +171,7 @@ der die Stimmen unter dem hält, was das Gerät rechtzeitig rendert:
   er reicht. Ein Lauf ist ein Render mit den älteren davor, bis ihre
   Frames den Puffer erreichen; `buffer_p99`, `buffer_max` und
   `buffer_overloads` gelten über die Läufe des Fensters. Das Galaxy Tab S4
-  rendert 47 Stimmen ohne Xrun bei einem p99 von 1,27 pro Render
+  rendert 47 Stimmen ohne Xrun bei einem p99 von 1,29 pro Render
   (Ticket 29).
 - `aud_graph_reset_stats` lässt die Messung in Ruhe, damit Tests und Tools
   die Zähler zurücksetzen, während ein Regler sie liest.
@@ -301,10 +301,10 @@ source.release();                                        // notes off, pedals up
 source.detach(1);                                        // after the last push; the next producer attaches
 print(source.stats.latencyP99Ns);                        // percentiles of the histograms
 print(graph.timing.periodP999Ns);                        // P of C = P + L + m
-final load = graph.renderLoad();                         // ticket 29: the last second
-print('${load.mean} ${load.p99} ${load.max}');           // shares of the block, 1 = all of it
-print(load.overloadsTotal);                              // never reset, unlike graph.stats
-print(graph.renderLoad(const Duration(seconds: 1), 384).bufferP99); // over a device buffer
+final gauge = graph.renderLoad();                        // ticket 29: the last second
+print('${gauge.mean} ${gauge.p99} ${gauge.max}');        // shares of the block, 1 = all of it
+print(gauge.overloadsTotal);                             // never reset, unlike graph.stats
+print(graph.renderLoad(bufferFrames: 384).bufferP99);    // over a device buffer
 print(graph.eventSources);                               // the live sources of the graph
 source.address;                                          // for a native producer, with
 AudEventSourceFfi.pushFunctionAddress;                   // the push, release and size functions

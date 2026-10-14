@@ -33,7 +33,7 @@
 
 namespace aud {
 
-// ............................................................................
+// ############################################################################
 // The gauge
 
 class LoadGauge {
@@ -77,6 +77,11 @@ class LoadGauge {
   static constexpr uint32_t kSlots = AUD_GRAPH_LOAD_RENDERS;
   static constexpr uint64_t kTagMask = 0xFFFF;
   static constexpr uint32_t kMaxFrames = 0xFFFF;
+  static_assert(std::atomic<uint64_t>::is_always_lock_free &&
+                    std::atomic<double>::is_always_lock_free,
+                "the realtime thread takes no lock (process-005)");
+  static_assert(kSlots % (kTagMask + 1) != 0,
+                "a tag tells a render from the one a lap later");
 
   // The bits of the share, the frames and the tag of the render `index`.
   static uint64_t pack(float share, uint32_t frames, uint64_t index) {

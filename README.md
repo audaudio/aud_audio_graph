@@ -160,7 +160,7 @@ keeps the voices below what the device renders in time:
   a render and the older ones before it whose frames reach the buffer;
   `buffer_p99`, `buffer_max` and `buffer_overloads` are taken over the
   runs of the window. The Galaxy Tab S4 renders 47 voices without an xrun
-  at a p99 of 1.27 per render (ticket 29).
+  at a p99 of 1.29 per render (ticket 29).
 - `aud_graph_reset_stats` leaves the gauge alone, so tests and tools can
   reset the counters while a governor reads it.
 
@@ -285,10 +285,10 @@ source.release();                                        // notes off, pedals up
 source.detach(1);                                        // after the last push; the next producer attaches
 print(source.stats.latencyP99Ns);                        // percentiles of the histograms
 print(graph.timing.periodP999Ns);                        // P of C = P + L + m
-final load = graph.renderLoad();                         // ticket 29: the last second
-print('${load.mean} ${load.p99} ${load.max}');           // shares of the block, 1 = all of it
-print(load.overloadsTotal);                              // never reset, unlike graph.stats
-print(graph.renderLoad(const Duration(seconds: 1), 384).bufferP99); // over a device buffer
+final gauge = graph.renderLoad();                        // ticket 29: the last second
+print('${gauge.mean} ${gauge.p99} ${gauge.max}');        // shares of the block, 1 = all of it
+print(gauge.overloadsTotal);                             // never reset, unlike graph.stats
+print(graph.renderLoad(bufferFrames: 384).bufferP99);    // over a device buffer
 print(graph.eventSources);                               // the live sources of the graph
 source.address;                                          // for a native producer, with
 AudEventSourceFfi.pushFunctionAddress;                   // the push, release and size functions

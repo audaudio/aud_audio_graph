@@ -443,10 +443,15 @@ abstract interface class AudGraph {
   /// [AudGraphLoad.maxRenders] renders, records no offline render and is
   /// not touched by [resetStats]; a zero or negative [window] reads all it
   /// keeps, a window without renders reads zeros. Not on the audio thread.
-  AudGraphLoad renderLoad([
+  ///
+  /// - [window] the time the newest renders cover; zero or negative reads
+  ///   all the gauge keeps
+  /// - [bufferFrames] the device buffer the runs fill; 0 makes every render
+  ///   a run
+  AudGraphLoad renderLoad({
     Duration window = const Duration(seconds: 1),
     int bufferFrames = 0,
-  ]);
+  });
 
   /// The sample position of the next block.
   int get samplePosition;

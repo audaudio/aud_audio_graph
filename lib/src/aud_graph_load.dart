@@ -33,8 +33,9 @@ class AudGraphLoad {
 
   // ...........................................................................
   /// The time the renders of the window cover: their [frames] at the
-  /// sample rate. Shorter than the window asked for while fewer renders
-  /// have run, or when [maxRenders] renders do not cover it.
+  /// sample rate. Up to one render longer than the window asked for, as
+  /// the render that reaches into it counts whole; shorter while fewer
+  /// renders have run, or when [maxRenders] renders do not cover it.
   final Duration window;
 
   /// The renders in the window.
