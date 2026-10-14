@@ -15,6 +15,7 @@ import 'package:ffi/ffi.dart';
 import 'aud_audio_graph_bindings_generated.dart' as bindings;
 import 'aud_cache_usage.dart';
 import 'aud_event_source.dart';
+import 'aud_graph_load.dart';
 import 'aud_graph_notification.dart';
 import 'aud_graph_options.dart';
 import 'aud_graph_state.dart';
@@ -136,6 +137,25 @@ extension AudNativeGraphTimingToDart on bindings.AudGraphTiming {
       for (var i = 0; i <= bindings.AUD_GRAPH_PERIOD_BINS; i++)
         period_histogram[i],
     ]),
+  );
+}
+
+/// Reads an [AudGraphLoad] from its native struct (ticket 29).
+extension AudNativeGraphLoadToDart on bindings.AudGraphLoad {
+  /// The reading of the gauge from its native struct.
+  AudGraphLoad toDart() => AudGraphLoad(
+    window: Duration(microseconds: (window_ns / 1000).round()),
+    renders: renders,
+    frames: frames,
+    mean: mean,
+    p99: p99,
+    max: max,
+    rendersTotal: renders_total,
+    overloadsTotal: overloads_total,
+    bufferFrames: buffer_frames,
+    bufferOverloads: buffer_overloads,
+    bufferP99: buffer_p99,
+    bufferMax: buffer_max,
   );
 }
 

@@ -144,6 +144,38 @@ geleert, nach dem Scheduler und vor den Events des Hosts.
   Realtime-Thread zählt ein Bin mit einem relaxed add, das Histogramm wird
   nach dem Snapshot der übrigen Felder gelesen.
 
+## Die Render-Last (Ticket 29)
+
+Wie viel seines Blocks der Audio-Thread braucht, für einen Last-Regler,
+der die Stimmen unter dem hält, was das Gerät rechtzeitig rendert:
+
+- Jeder Live-Render hält seinen Anteil am Block fest - seine Renderzeit
+  über der Zeit, die seine Frames bei der Samplerate dauern, die beiden
+  Zahlen, die auch die Overload-Diagnose vergleicht - in einem lock-freien
+  Ring der letzten `AUD_GRAPH_LOAD_RENDERS` (1024) Renders. Ein
+  64-Bit-Atomic pro Slot hält den Anteil, die Frames und ein Tag des
+  Render-Index; ein Leser braucht so kein Seqlock und hört an einem Slot
+  auf, den der Audio-Thread inzwischen überschrieben hat. Offline-Renders
+  zählen nicht.
+- `aud_graph_render_load` liest eine `AudGraphLoad` über die neuesten
+  Renders, deren Frames ein Fenster bei der Samplerate abdecken
+  (`window_ns` <= 0: der ganze Ring): die Renders, ihre Frames und ihre
+  Dauer, den nach Frames gewichteten mittleren Anteil, das 99. Perzentil
+  nach Nearest Rank, den größten Anteil sowie die Live-Renders und
+  Overloads seit dem Anlegen des Graphen. Von jedem Thread außer dem
+  Audio-Thread; ohne Allokation.
+- Derselbe Aufruf liest die Last des Gerätepuffers (`buffer_frames`): Ein
+  Stream, dessen Puffer mehrere Renders fasst, spielt weiter, wenn ein
+  Render länger als sein Block dauert und die nächsten aufholen, und
+  setzt aus, wenn die Renders, die einen Puffer füllen, länger dauern als
+  er reicht. Ein Lauf ist ein Render mit den älteren davor, bis ihre
+  Frames den Puffer erreichen; `buffer_p99`, `buffer_max` und
+  `buffer_overloads` gelten über die Läufe des Fensters. Das Galaxy Tab S4
+  rendert 47 Stimmen ohne Xrun bei einem p99 von 1,29 pro Render
+  (Ticket 29).
+- `aud_graph_reset_stats` lässt die Messung in Ruhe, damit Tests und Tools
+  die Zähler zurücksetzen, während ein Regler sie liest.
+
 ## Der Headless Host (Ticket 20)
 
 Die C-API `aud_host_*` betreibt einen Graphen ohne Dart, so wie es die
@@ -269,6 +301,10 @@ source.release();                                        // notes off, pedals up
 source.detach(1);                                        // after the last push; the next producer attaches
 print(source.stats.latencyP99Ns);                        // percentiles of the histograms
 print(graph.timing.periodP999Ns);                        // P of C = P + L + m
+final gauge = graph.renderLoad();                        // ticket 29: the last second
+print('${gauge.mean} ${gauge.p99} ${gauge.max}');        // shares of the block, 1 = all of it
+print(gauge.overloadsTotal);                             // never reset, unlike graph.stats
+print(graph.renderLoad(bufferFrames: 384).bufferP99);    // over a device buffer
 print(graph.eventSources);                               // the live sources of the graph
 source.address;                                          // for a native producer, with
 AudEventSourceFfi.pushFunctionAddress;                   // the push, release and size functions

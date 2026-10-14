@@ -26,6 +26,7 @@ void main() {
     test('carries the values of the native header', () {
       expect(AUD_GRAPH_RUNNING, bindings.AUD_GRAPH_RUNNING);
       expect(AUD_NOTIFY_EVENT, bindings.AUD_NOTIFY_EVENT);
+      expect(AUD_GRAPH_LOAD_RENDERS, bindings.AUD_GRAPH_LOAD_RENDERS);
     });
   });
 }

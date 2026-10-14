@@ -10,7 +10,8 @@
 // the scheduler into the event table of the block (interop-002), runs the
 // jobs of the program in order (graph-001) and advances the fades of the
 // connections and the retirement of removed nodes. Diagnostics are counted
-// per block and reported once.
+// per block and reported once; the load gauge records the share of its
+// block each live render took (ticket 29).
 
 #include <algorithm>
 #include <cmath>
@@ -2368,13 +2369,18 @@ int32_t renderBlock(AudGraph* graph,
   }
   const int64_t budget = static_cast<int64_t>(
       std::llround(static_cast<double>(frames) * nsPerSample(graph)));
-  if (!graph->offline && elapsed > budget) {
-    graph->overloads.fetch_add(1, std::memory_order_relaxed);
-    AudGraphNotification n = makeNotification(graph, AUD_NOTIFY_DIAGNOSTIC);
-    n.code = AUD_ERROR_OVERLOAD;
-    n.count = 1;
-    n.value = elapsed;
-    notify(graph, n);
+  // The load gauge (ticket 29) sees the time and the budget of the
+  // overload diagnostic, of live renders only.
+  if (!graph->offline) {
+    graph->loadGauge.record(elapsed, budget, frames, graph->sampleRate);
+    if (elapsed > budget) {
+      graph->overloads.fetch_add(1, std::memory_order_relaxed);
+      AudGraphNotification n = makeNotification(graph, AUD_NOTIFY_DIAGNOSTIC);
+      n.code = AUD_ERROR_OVERLOAD;
+      n.count = 1;
+      n.value = elapsed;
+      notify(graph, n);
+    }
   }
   if (graph->blockNotified) wakeListener(graph);
   return AUD_OK;

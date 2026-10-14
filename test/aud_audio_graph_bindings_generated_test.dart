@@ -146,6 +146,11 @@ void main() {
         expect(bindings.aud_event_source_stats(nullptr, nullptr), lessThan(0));
         bindings.aud_event_source_release(nullptr);
         expect(bindings.aud_graph_timing(nullptr, nullptr), lessThan(0));
+        // The calls of ticket 29.
+        expect(
+          bindings.aud_graph_render_load(nullptr, 0, 0, nullptr),
+          lessThan(0),
+        );
         expect(
           bindings.aud_host_last_error(nullptr).cast<Utf8>().toDartString(),
           isEmpty,
@@ -163,7 +168,16 @@ void main() {
       final stats = calloc<bindings.AudGraphStats>();
       final state = calloc<bindings.AudGraphTransportState>();
       final request = calloc<bindings.AudOfflineRequest>();
+      final load = calloc<bindings.AudGraphLoad>();
       try {
+        expect(
+          bindings.aud_graph_render_load(graph.pointer, 0, 0, load),
+          AUD_ERROR_INVALID_ARGUMENT,
+        );
+        expect(
+          bindings.aud_graph_render_load(graph.pointer, 0, 0, nullptr),
+          AUD_ERROR_INVALID_ARGUMENT,
+        );
         expect(
           bindings.aud_graph_get_stats(graph.pointer, stats),
           AUD_ERROR_INVALID_ARGUMENT,
@@ -196,6 +210,7 @@ void main() {
         calloc.free(stats);
         calloc.free(state);
         calloc.free(request);
+        calloc.free(load);
       }
     });
   });

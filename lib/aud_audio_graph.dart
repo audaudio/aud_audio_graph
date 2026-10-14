@@ -16,6 +16,7 @@ export 'src/aud_graph.dart';
 export 'src/aud_graph_constants.dart';
 export 'src/aud_graph_document.dart';
 export 'src/aud_graph_exception.dart';
+export 'src/aud_graph_load.dart';
 export 'src/aud_graph_node.dart';
 export 'src/aud_graph_notification.dart';
 export 'src/aud_graph_options.dart';

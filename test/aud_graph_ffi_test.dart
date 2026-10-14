@@ -321,6 +321,100 @@ void main() {
       );
     });
 
+    group('renderLoad({window, bufferFrames}) (ticket 29)', () {
+      // Renders live blocks through the render function of a stream, as
+      // aud_audio_io calls it.
+      void renderLive(int blocks, int frames) {
+        final samples = calloc<Float>(frames);
+        final channels = calloc<Pointer<Float>>()..value = samples;
+        final bus = calloc<core.AudAudioBus>();
+        final request = calloc<core.AudRenderRequest>();
+        try {
+          bus.ref
+            ..struct_size = sizeOf<core.AudAudioBus>()
+            ..num_channels = 1
+            ..channels = channels;
+          request.ref
+            ..struct_size = sizeOf<core.AudRenderRequest>()
+            ..frames = frames
+            ..num_output_buses = 1
+            ..outputs = bus;
+          for (var i = 0; i < blocks; i++) {
+            expect(aud_graph_render(graph.pointer.cast(), request), AUD_OK);
+          }
+        } finally {
+          calloc
+            ..free(request)
+            ..free(bus)
+            ..free(channels)
+            ..free(samples);
+        }
+      }
+
+      test('reads zeros before a render', () {
+        expect(graph.renderLoad(), const AudGraphLoad());
+        expect(graph.renderLoad(window: Duration.zero), const AudGraphLoad());
+      });
+
+      test('reads the live renders of the window, not the offline ones', () {
+        oscillator();
+        graph.start();
+        renderLive(300, 240); // 5 ms each
+        render(1024);
+        final second = graph.renderLoad();
+        expect(second.window, const Duration(seconds: 1));
+        expect(second.renders, 200);
+        expect(second.frames, 48000);
+        expect(second.max, greaterThan(0));
+        expect(second.p99, lessThanOrEqualTo(second.max));
+        expect(second.mean, lessThanOrEqualTo(second.max));
+        expect(second.rendersTotal, 300);
+        expect(second.overloadsTotal, graph.stats.overloads);
+        final short = graph.renderLoad(
+          window: const Duration(milliseconds: 100),
+        );
+        expect(short.renders, 20);
+        expect(short.window, const Duration(milliseconds: 100));
+        final all = graph.renderLoad(window: Duration.zero);
+        expect(all.renders, 300);
+        expect(all.window, const Duration(milliseconds: 1500));
+        expect(graph.stats.blocksRendered, 300 + 4);
+      });
+
+      test('reads the runs that fill a device buffer', () {
+        graph.start();
+        renderLive(100, 240);
+        final perRender = graph.renderLoad(window: Duration.zero);
+        expect(perRender.bufferFrames, 0);
+        expect(perRender.bufferP99, perRender.p99);
+        expect(perRender.bufferMax, perRender.max);
+        final buffer = graph.renderLoad(
+          window: Duration.zero,
+          bufferFrames: 960,
+        );
+        expect(buffer.bufferFrames, 960);
+        // A run of four renders lasts no longer than its longest render.
+        expect(buffer.bufferMax, lessThanOrEqualTo(perRender.max));
+        expect(buffer.bufferOverloads, lessThanOrEqualTo(perRender.renders));
+        expect(
+          graph
+              .renderLoad(window: Duration.zero, bufferFrames: -5)
+              .bufferFrames,
+          0,
+        );
+      });
+
+      test('stays when the counters are reset', () {
+        graph.start();
+        renderLive(10, 256);
+        graph.resetStats();
+        expect(graph.stats.blocksRendered, 0);
+        final load = graph.renderLoad(window: Duration.zero);
+        expect(load.renders, 10);
+        expect(load.rendersTotal, 10);
+      });
+    });
+
     test('renders a sine and counts', () {
       final osc = oscillator();
       graph.transaction((tx) => tx.connect(osc, graph.io));

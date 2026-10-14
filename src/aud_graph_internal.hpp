@@ -26,6 +26,7 @@
 #include "aud_abi.h"
 #include "aud_audio_graph.h"
 #include "aud_graph_event_source.hpp"
+#include "aud_graph_load.hpp"
 #include "aud_semaphore.hpp"
 #include "aud_spsc_queue.hpp"
 #include "aud_time_filter.h"
@@ -737,6 +738,10 @@ struct AudGraph {
   std::atomic<uint64_t> overloads{0};
   std::atomic<float> outputPeak{0};
   std::atomic<uint64_t> realtimeViolations{0};
+
+  // The load gauge (ticket 29): the realtime thread records every live
+  // render, any other thread reads it; aud_graph_reset_stats leaves it.
+  aud::LoadGauge loadGauge;
 };
 
 namespace aud {

@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.5.2 - 2026-10-14
+
+### Added
+
+- Add a load gauge over the last renders
+
+- The share of its block that each live render took, in a lock-free ring of the last 1024 renders on the audio thread
+
+- aud_graph_render_load, AudGraphLoad and AUD_GRAPH_LOAD_RENDERS: renders, frames, duration, mean, p99 and maximum of a window, the live renders and overloads since the graph was created
+
+- The p99, the maximum and the overloads of the runs of renders that fill the device buffer
+
+- The gauge stays apart from aud_graph_reset_stats; offline renders are not recorded
+
+- AudGraph.renderLoad(window, bufferFrames) and the value class AudGraphLoad
+
+- Native tests of the window, the wrap, overwritten slots, the runs, offline renders, a slow node and a reader while the audio thread renders
+
+- The bindings and the ABI constants generated again; the gauge in the READMEs and the index
+
+- Add an example that resolves outside a full ticket
+
+- The example takes aud_audio_core from its git tag instead of a sibling checkout that a ticket may not have
+
+- Add helix ^1.12.0 to the dev dependencies
+
+- Add the fixes of the review of the load gauge
+
+- AudGraph.renderLoad takes named arguments window and bufferFrames, documented
+
+- The runs over the device buffer in a function of their own; the overload check under one test of a live render
+
+- Compile-time checks that the ring takes no lock and that a tag tells the laps apart
+
+- The window of AudGraphLoad may be up to one render longer than asked
+
+- The README examples compile; the p99 of 47 voices on the Galaxy Tab S4 is 1.29
+
 ## 0.5.1 - 2026-10-12
 
 ### Added

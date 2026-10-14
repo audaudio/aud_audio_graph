@@ -135,6 +135,35 @@ scheduler and before the host's events.
   counts a bin with a relaxed add, the histogram is read after the
   snapshot of the other fields.
 
+## The render load (ticket 29)
+
+How much of its block the audio thread spends, for a load governor that
+keeps the voices below what the device renders in time:
+
+- Every live render records its share of the block - its render time
+  over the time its frames last at the sample rate, the two numbers the
+  overload diagnostic compares - in a lock-free ring of the last
+  `AUD_GRAPH_LOAD_RENDERS` (1024) renders. One 64-bit atomic per slot
+  holds the share, the frames and a tag of the render's index, so a
+  reader needs no seqlock and stops at a slot the audio thread overwrote
+  meanwhile. Offline renders are not recorded.
+- `aud_graph_render_load` reads an `AudGraphLoad` over the newest renders
+  whose frames cover a window at the sample rate (`window_ns` <= 0: the
+  whole ring): the renders, their frames and duration, the mean share
+  weighted by the frames, the 99th percentile by nearest rank, the
+  largest share, and the live renders and overloads since the graph was
+  created. From any thread but the audio thread; without allocation.
+- The same call reads the load of the device buffer (`buffer_frames`): a
+  stream whose buffer holds several renders plays on when one render
+  takes longer than its block and the next ones catch up, and drops out
+  when the renders that fill a buffer take longer than it lasts. A run is
+  a render and the older ones before it whose frames reach the buffer;
+  `buffer_p99`, `buffer_max` and `buffer_overloads` are taken over the
+  runs of the window. The Galaxy Tab S4 renders 47 voices without an xrun
+  at a p99 of 1.29 per render (ticket 29).
+- `aud_graph_reset_stats` leaves the gauge alone, so tests and tools can
+  reset the counters while a governor reads it.
+
 ## The headless host (ticket 20)
 
 The C API `aud_host_*` runs a graph without Dart, as the plugin shells do
@@ -256,6 +285,10 @@ source.release();                                        // notes off, pedals up
 source.detach(1);                                        // after the last push; the next producer attaches
 print(source.stats.latencyP99Ns);                        // percentiles of the histograms
 print(graph.timing.periodP999Ns);                        // P of C = P + L + m
+final gauge = graph.renderLoad();                        // ticket 29: the last second
+print('${gauge.mean} ${gauge.p99} ${gauge.max}');        // shares of the block, 1 = all of it
+print(gauge.overloadsTotal);                             // never reset, unlike graph.stats
+print(graph.renderLoad(bufferFrames: 384).bufferP99);    // over a device buffer
 print(graph.eventSources);                               // the live sources of the graph
 source.address;                                          // for a native producer, with
 AudEventSourceFfi.pushFunctionAddress;                   // the push, release and size functions
