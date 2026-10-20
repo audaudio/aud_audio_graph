@@ -58,12 +58,17 @@ struct Record {
   uint32_t type;
   uint32_t word0;
   uint32_t flags;
+  uint32_t word1;
+  const void* node;  // the recorder that received the event
 };
 
 inline std::vector<Record> g_records;
 inline std::vector<uint32_t> g_resets;
 inline std::vector<uint32_t> g_fixedFrames;
 inline std::vector<std::pair<uint32_t, float>> g_params;
+// The recorders in the order they were created, to tell the records of
+// several recorders apart (ticket 37).
+inline std::vector<const void*> g_recorders;
 
 // aud.test.recorder: records the events it receives, its parameter calls
 // and its resets.
@@ -72,7 +77,9 @@ struct Recorder {
 };
 
 inline void* recorderCreate(const AudNodeDescriptor*, const AudHostApi*) {
-  return new Recorder();
+  auto* recorder = new Recorder();
+  g_recorders.push_back(recorder);
+  return recorder;
 }
 inline void recorderDestroy(void* instance) {
   delete static_cast<Recorder*>(instance);
@@ -82,11 +89,11 @@ inline void recorderReset(void*, uint32_t reason) { g_resets.push_back(reason); 
 inline void recorderSetParam(void*, uint32_t index, float value) {
   g_params.emplace_back(index, value);
 }
-inline void recorderProcess(void*, const AudProcessContext* context) {
+inline void recorderProcess(void* instance, const AudProcessContext* context) {
   for (uint32_t i = 0; i < context->num_events; ++i) {
     const AudEvent& e = context->events[i];
     g_records.push_back({context->sample_position, e.sample_offset, e.port,
-                         e.type, e.words[0], e.flags});
+                         e.type, e.words[0], e.flags, e.words[1], instance});
   }
   for (uint32_t b = 0; b < context->num_output_buses; ++b) {
     for (uint32_t c = 0; c < context->outputs[b].num_channels; ++c) {
@@ -635,6 +642,7 @@ struct Fixture {
     host->register_node_type(host->host, &kInfiniteDescriptor);
     g_records.clear();
     g_records.reserve(kRecordCapacity);
+    g_recorders.clear();
     g_resets.clear();
     g_resets.reserve(kRecordCapacity);
     g_fixedFrames.clear();

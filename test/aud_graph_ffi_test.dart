@@ -63,9 +63,16 @@ void main() {
         'aud.graph.oscillator',
         'aud.graph.mixer',
         'aud.graph.filter',
+        'aud.graph.channel_split',
         'aud.core.gain',
       ]);
       expect(graph.nodeType('aud.graph.filter')?.params.length, 3);
+      final split = graph.nodeType(AUD_GRAPH_CHANNEL_SPLIT_TYPE_ID)!;
+      expect(split.eventInputs.single.id, 'in');
+      expect(split.eventOutputs.map((port) => port.id), [
+        for (var n = 1; n <= AUD_CHANNEL_SPLIT_NUM_OUTPUTS; n++) 'ch$n',
+      ]);
+      expect(split.capabilities.eventOutput, isTrue);
       expect(graph.nodeType('aud.nothing'), isNull);
       expect(graph.nodes, isEmpty);
       expect(graph.revision, 0);

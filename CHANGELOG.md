@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Add the reference node aud.graph.channel_split (ticket 37)
+
+- One event input, 16 event outputs: a channel voice event leaves on the output of its MIDI channel
+- Other events leave on output 0
+- Native tests for render requests and documents of the headless host
+
 ## 0.5.3 - 2026-10-15
 
 ## 0.5.2 - 2026-10-14
@@ -39,6 +49,7 @@
 - The window of AudGraphLoad may be up to one render longer than asked
 
 - The README examples compile; the p99 of 47 voices on the Galaxy Tab S4 is 1.29
+
 
 ## 0.5.1 - 2026-10-12
 
@@ -89,6 +100,7 @@
 - The capacity of a source is at most 2^20; the Dart example attaches, detaches, sets latencyNs and lists graph.eventSources
 
 - Statics after the public getters; the stress tests carry their numbers in AUD_CHECK_MSG instead of printing them
+
 
 ## 0.5.0 - 2026-10-12
 
@@ -158,6 +170,7 @@
 
 - The error tests check the type and the message; AudCacheUsage and AudNodeMessage get their landmarks
 
+
 ## 0.4.0 - 2026-10-09
 
 ### Changed
@@ -192,6 +205,7 @@
 - Refuse descriptors without parameter or string ids
 
 - Add AudHost and the asset table of the graph document on the Dart side
+
 
 ## 0.2.0 - 2026-10-08
 

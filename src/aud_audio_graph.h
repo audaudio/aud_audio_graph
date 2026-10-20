@@ -48,6 +48,7 @@ typedef struct AudGraph AudGraph;
 #define AUD_GRAPH_OSCILLATOR_TYPE_ID "aud.graph.oscillator"
 #define AUD_GRAPH_MIXER_TYPE_ID "aud.graph.mixer"
 #define AUD_GRAPH_FILTER_TYPE_ID "aud.graph.filter"
+#define AUD_GRAPH_CHANNEL_SPLIT_TYPE_ID "aud.graph.channel_split"
 
 // The handle of the graph itself.
 #define AUD_GRAPH_NODE 0
@@ -109,6 +110,10 @@ enum {
   AUD_FILTER_PARAM_CUTOFF = 0,
   AUD_FILTER_PARAM_RESONANCE = 1,
   AUD_FILTER_PARAM_MODE = 2,  // 0 low, 1 high, 2 band, 3 notch
+  // The event outputs of the channel split, which has no parameters:
+  // output n carries UMP channel n (MIDI channel n + 1), output 0 also
+  // every event that is no channel voice message.
+  AUD_CHANNEL_SPLIT_NUM_OUTPUTS = 16,
 };
 
 // How a graph is created. Zero means the default.

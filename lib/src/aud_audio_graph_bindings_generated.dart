@@ -1041,6 +1041,8 @@ external int aud_host_wait_loads(ffi.Pointer<AudHost> host, int timeout_ms);
 @ffi.Native<ffi.Int32 Function(ffi.Uint32)>()
 external int aud_tasks_wait_idle(int timeout_ms);
 
+const int AUD_CHANNEL_SPLIT_NUM_OUTPUTS = 16;
+
 const int AUD_CONNECTION_LOW_LATENCY = 1;
 
 const int AUD_FILTER_PARAM_CUTOFF = 0;
@@ -1048,6 +1050,8 @@ const int AUD_FILTER_PARAM_CUTOFF = 0;
 const int AUD_FILTER_PARAM_MODE = 2;
 
 const int AUD_FILTER_PARAM_RESONANCE = 1;
+
+const String AUD_GRAPH_CHANNEL_SPLIT_TYPE_ID = 'aud.graph.channel_split';
 
 const int AUD_GRAPH_CREATED = 0;
 

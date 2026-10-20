@@ -34,8 +34,12 @@ The engine behind `src/aud_audio_graph.h`, built on the contracts of
 - The render function of plugin-002, `aud_graph_render`, with host buses
   and events, and the offline renderer over a virtual timeline.
 - The reference nodes `aud.graph.oscillator`, `aud.graph.mixer`,
-  `aud.graph.filter`, `aud.graph.feedback` and `aud.graph.tap`;
-  `aud.core.gain` of the core is registered by the Dart side.
+  `aud.graph.filter`, `aud.graph.channel_split`, `aud.graph.feedback` and
+  `aud.graph.tap`; `aud.core.gain` of the core is registered by the Dart
+  side. `aud.graph.channel_split` hands every channel voice message of its
+  event input to the event output of its MIDI channel, `ch1` to `ch16`,
+  and every other event to `ch1` - e.g. to play an instrument of its own
+  per MIDI channel of a plugin host.
 
 ## The resources of the process (ticket 25)
 
