@@ -7,8 +7,17 @@
 - Add the reference node aud.graph.channel_split (ticket 37)
 
 - One event input, 16 event outputs: a channel voice event leaves on the output of its MIDI channel
+
 - Other events leave on output 0
+
 - Native tests for render requests and documents of the headless host
+
+
+### Changed
+
+- Keep the split callback timing test stable under tsan
+- Sleep the callback after each pair of renders, so the gaps between pairs never fall below it
+- Tell the gaps within a pair apart at 5 ms instead of 1 ms, since a tsan render can take longer than 1 ms
 
 ## 0.5.3 - 2026-10-15
 

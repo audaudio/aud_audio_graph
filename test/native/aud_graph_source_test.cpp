@@ -965,18 +965,21 @@ AUD_TEST(graph_timing_histogram_takes_the_gap_of_split_callbacks) {
   TimedStream stream(f);
   // A stream that splits a callback of 10.7 ms into two renders back to
   // back: half of the gaps are near zero, p99.9 is the callback.
-  const auto from = std::chrono::steady_clock::now();
+  // The gap within a pair is the time one render takes, which the thread
+  // sanitizer on a loaded host stretches past 1 ms. The test sleeps the
+  // callback after each pair, so the gaps between the pairs never fall
+  // below it, and 5 ms - less than the 5.33 ms of a block - tell them apart.
   for (uint32_t i = 0; i < 20; ++i) {
-    std::this_thread::sleep_until(from + std::chrono::nanoseconds(10666667) * i);
+    if (i > 0) std::this_thread::sleep_for(std::chrono::nanoseconds(10666667));
     stream.render(256);
     stream.render(256);
   }
   const AudGraphTiming t = timingOf(f.graph);
   AUD_CHECK(periodTotal(t) == 39);
-  uint64_t belowOneMs = 0;
-  for (uint32_t i = 0; i < 10; ++i) belowOneMs += t.period_histogram[i];
-  AUD_CHECK(belowOneMs == 20);
-  AUD_CHECK(periodPercentileNs(t, 0.5) <= 1000000);
+  uint64_t belowFiveMs = 0;
+  for (uint32_t i = 0; i < 50; ++i) belowFiveMs += t.period_histogram[i];
+  AUD_CHECK(belowFiveMs == 20);
+  AUD_CHECK(periodPercentileNs(t, 0.5) <= 5000000);
   // With 39 gaps p99.9 is the longest one; a loaded host overshoots its
   // sleep by several milliseconds, so only the lower bound is tight.
   const int64_t p999 = periodPercentileNs(t, 0.999);
