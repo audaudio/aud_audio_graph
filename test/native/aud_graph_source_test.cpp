@@ -18,6 +18,15 @@
 #include <thread>
 #include <vector>
 
+#if _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <timeapi.h>
+#pragma comment(lib, "winmm.lib")
+#endif
+
 #include "aud_audio_graph.h"
 #include "aud_graph_fixture.hpp"
 #include "aud_test.hpp"
@@ -75,10 +84,18 @@ int64_t periodPercentileNs(const AudGraphTiming& t, double fraction) {
 // Renders `count` blocks of 256 frames, one every `periodNs` from `from`.
 void renderPaced(TimedStream& stream, std::chrono::steady_clock::time_point from,
                  int64_t periodNs, uint32_t count) {
+#if _WIN32
+  // The default timer of Windows ticks every 15.6 ms; the pace of a stream
+  // needs 1 ms, as audio hosts set it (ticket 38).
+  timeBeginPeriod(1);
+#endif
   for (uint32_t i = 1; i <= count; ++i) {
     std::this_thread::sleep_until(from + std::chrono::nanoseconds(periodNs) * i);
     stream.render(256);
   }
+#if _WIN32
+  timeEndPeriod(1);
+#endif
 }
 
 }  // namespace

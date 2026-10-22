@@ -9,12 +9,12 @@
 // stable parameter ids, latency and tail, the events for the host, and
 // every refusal that leaves the graph untouched.
 
-#include <unistd.h>
-
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -34,14 +34,16 @@ struct TempDir {
   std::vector<std::string> files;
 
   TempDir() {
-    char buffer[] = "/tmp/aud_host_XXXXXX";
-    path = mkdtemp(buffer);
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("aud_host_" + std::to_string(std::random_device{}()));
+    std::filesystem::create_directories(dir);
+    path = dir.generic_string();
     write("song.txt");
   }
 
   ~TempDir() {
-    for (const std::string& file : files) std::remove(file.c_str());
-    rmdir(path.c_str());
+    std::error_code ignored;
+    std::filesystem::remove_all(path, ignored);
   }
 
   void write(const std::string& name) {
