@@ -788,7 +788,10 @@ AUD_EXPORT int32_t aud_graph_render_load(const AudGraph* graph,
 // [realtime] Renders one block into the host's buses: the render function
 // of plugin-002, `user` is the graph. Blocks longer than the prepared
 // maximum are refused with AUD_ERROR_INVALID_ARGUMENT and silence; a graph
-// that is not running renders silence and returns AUD_OK.
+// that is not running renders silence and returns AUD_OK. The events of
+// the request at one offset reach a node in their order - a bank select
+// before its program change -, but for the rule of interop-002 that puts
+// note offs before the rest and note ons behind it (ticket 37).
 AUD_EXPORT int32_t aud_graph_render(void* user, const AudRenderRequest* request);
 
 // [realtime] Renders one block like aud_graph_render and hands the events

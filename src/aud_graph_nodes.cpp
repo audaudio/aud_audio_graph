@@ -411,8 +411,9 @@ const AudNodeDescriptor kFilterDescriptor = {
 // host to one instrument per channel. Output n carries UMP channel n, MIDI
 // channel n + 1, of every group; every other event leaves on output 0. An
 // event keeps its offset, flags and words, only its port changes. The node
-// has no buses, no parameters and no state; it never allocates. The engine
-// treats it as a router: the nodes behind it track the notes it hands them.
+// has no buses, no parameters and no state; it never allocates. It passes
+// its events on (AUD_NODE_CAP_PASSES_EVENTS): the nodes behind it track the
+// notes it hands them.
 
 // The output of an event: the channel of a channel voice message, 0 for
 // every other event.
@@ -486,7 +487,7 @@ const AudNodeDescriptor kChannelSplitDescriptor = {
     "Channel Split",
     "Audanika",
     AUD_NODE_CAP_VARIABLE_BLOCK | AUD_NODE_CAP_EVENTS |
-        AUD_NODE_CAP_EVENT_OUTPUT,
+        AUD_NODE_CAP_EVENT_OUTPUT | AUD_NODE_CAP_PASSES_EVENTS,
     0,
     0,
     0,
@@ -514,10 +515,6 @@ int32_t registerReferenceNodes(const AudHostApi* host) {
     if (result != AUD_OK) return result;
   }
   return AUD_OK;
-}
-
-RouterOutput routerOutputOf(const AudNodeDescriptor* descriptor) {
-  return descriptor == &kChannelSplitDescriptor ? channelSplitOutput : nullptr;
 }
 
 }  // namespace aud

@@ -1340,7 +1340,8 @@ AUD_EXPORT int32_t aud_graph_create_node(AudGraph* graph, const char* type_id,
   }
   auto instance = std::make_unique<NodeInstance>();
   instance->descriptor = type;
-  instance->routerOutput = routerOutputOf(type);
+  instance->passesEvents =
+      (type->capabilities & AUD_NODE_CAP_PASSES_EVENTS) != 0;
   const AudNodeConfig empty{sizeof(AudNodeConfig), 0, nullptr, 0, nullptr, 0, 0};
   const AudNodeConfig& c = config == nullptr ? empty : *config;
   int32_t result =

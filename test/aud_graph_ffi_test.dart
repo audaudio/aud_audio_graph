@@ -73,6 +73,7 @@ void main() {
         for (var n = 1; n <= AUD_CHANNEL_SPLIT_NUM_OUTPUTS; n++) 'ch$n',
       ]);
       expect(split.capabilities.eventOutput, isTrue);
+      expect(split.capabilities.passesEvents, isTrue);
       expect(graph.nodeType('aud.nothing'), isNull);
       expect(graph.nodes, isEmpty);
       expect(graph.revision, 0);

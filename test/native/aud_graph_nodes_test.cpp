@@ -200,7 +200,8 @@ AUD_TEST(channel_split_describes_one_input_and_sixteen_outputs) {
   AUD_CHECK(d->num_input_buses == 0 && d->num_output_buses == 0);
   AUD_CHECK(d->num_params == 0 && d->num_string_keys == 0);
   AUD_CHECK((d->capabilities & AUD_NODE_CAP_EVENTS) != 0 &&
-            (d->capabilities & AUD_NODE_CAP_EVENT_OUTPUT) != 0);
+            (d->capabilities & AUD_NODE_CAP_EVENT_OUTPUT) != 0 &&
+            (d->capabilities & AUD_NODE_CAP_PASSES_EVENTS) != 0);
   AUD_CHECK(d->num_event_inputs == 1 &&
             std::strcmp(d->event_inputs[0].id, "in") == 0);
   AUD_CHECK(d->num_event_outputs == AUD_CHANNEL_SPLIT_NUM_OUTPUTS);
