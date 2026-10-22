@@ -52,7 +52,7 @@ AUD_TEST(create_refuses_invalid_configurations) {
 
 AUD_TEST(registers_the_reference_nodes_and_test_nodes) {
   Fixture f;
-  AUD_CHECK(aud_graph_num_node_types(f.graph) == 12);
+  AUD_CHECK(aud_graph_num_node_types(f.graph) == 13);
   AUD_CHECK(std::strcmp(aud_graph_node_type(f.graph, 0)->type_id,
                         AUD_GRAPH_FEEDBACK_TYPE_ID) == 0);
   AUD_CHECK(aud_graph_node_type(f.graph, 99) == nullptr);

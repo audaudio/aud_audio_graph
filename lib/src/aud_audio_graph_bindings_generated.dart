@@ -446,7 +446,10 @@ external int aud_graph_remove_node(ffi.Pointer<AudGraph> graph, int node);
 /// [realtime] Renders one block into the host's buses: the render function
 /// of plugin-002, `user` is the graph. Blocks longer than the prepared
 /// maximum are refused with AUD_ERROR_INVALID_ARGUMENT and silence; a graph
-/// that is not running renders silence and returns AUD_OK.
+/// that is not running renders silence and returns AUD_OK. The events of
+/// the request at one offset reach a node in their order - a bank select
+/// before its program change -, but for the rule of interop-002 that puts
+/// note offs before the rest and note ons behind it (ticket 37).
 @ffi.Native<
   ffi.Int32 Function(ffi.Pointer<ffi.Void>, ffi.Pointer<core.AudRenderRequest>)
 >()
@@ -1041,6 +1044,8 @@ external int aud_host_wait_loads(ffi.Pointer<AudHost> host, int timeout_ms);
 @ffi.Native<ffi.Int32 Function(ffi.Uint32)>()
 external int aud_tasks_wait_idle(int timeout_ms);
 
+const int AUD_CHANNEL_SPLIT_NUM_OUTPUTS = 16;
+
 const int AUD_CONNECTION_LOW_LATENCY = 1;
 
 const int AUD_FILTER_PARAM_CUTOFF = 0;
@@ -1048,6 +1053,8 @@ const int AUD_FILTER_PARAM_CUTOFF = 0;
 const int AUD_FILTER_PARAM_MODE = 2;
 
 const int AUD_FILTER_PARAM_RESONANCE = 1;
+
+const String AUD_GRAPH_CHANNEL_SPLIT_TYPE_ID = 'aud.graph.channel_split';
 
 const int AUD_GRAPH_CREATED = 0;
 
@@ -1414,7 +1421,11 @@ final class AudGraphConfig extends ffi.Struct {
   @ffi.Uint32()
   external int notification_capacity;
 
-  /// 0 = 1024, the budget of interop-002
+  /// 0 = 1024, the budget of interop-002. The events the nodes emit in a
+  /// block share an arena as large as the block's event table, 3 *
+  /// max_events_per_block + 768 entries: an event takes one entry per
+  /// connection it leaves on, beyond the arena it is dropped and counted
+  /// (AUD_ERROR_QUEUE_FULL).
   @ffi.Uint32()
   external int max_events_per_block;
 

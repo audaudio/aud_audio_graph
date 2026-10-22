@@ -5,10 +5,12 @@
 // found in the LICENSE file in the root of this package.
 
 // The reference nodes of the graph (plan of ticket 17, S2): a test
-// oscillator that plays notes, a mixer with a gain per input and a
-// state-variable filter. They are ordinary ABI nodes on AudNodeBase of
-// aud_audio_core, registered through the host api like the nodes of any
-// DSP package, so they exercise the contract the packages build on.
+// oscillator that plays notes, a mixer with a gain per input, a
+// state-variable filter and, since ticket 37, a channel split that hands
+// each MIDI channel to an event output of its own. They are ordinary ABI
+// nodes on AudNodeBase of aud_audio_core, registered through the host api
+// like the nodes of any DSP package, so they exercise the contract the
+// packages build on.
 
 #include <algorithm>
 #include <cmath>
@@ -403,11 +405,111 @@ const AudNodeDescriptor kFilterDescriptor = {
     &kFilterVTable,
 };
 
+// ............................................................................
+// aud.graph.channel_split: hands every channel voice message - MIDI 1.0 and
+// MIDI 2.0 - to the event output of its channel, e.g. the MIDI of a plugin
+// host to one instrument per channel. Output n carries UMP channel n, MIDI
+// channel n + 1, of every group; every other event leaves on output 0. An
+// event keeps its offset, flags and words, only its port changes. The node
+// has no buses, no parameters and no state; it never allocates. It passes
+// its events on (AUD_NODE_CAP_PASSES_EVENTS): the nodes behind it track the
+// notes it hands them.
+
+// The output of an event: the channel of a channel voice message, 0 for
+// every other event.
+uint32_t channelSplitOutput(const AudEvent& event) {
+  if (event.type != AUD_EVENT_UMP) return 0;
+  if (!aud_ump_is_channel_voice(event.words[0])) return 0;
+  return aud_ump_channel(event.words[0]);
+}
+
+class ChannelSplit : public AudNodeBase {
+ public:
+  ChannelSplit(const AudNodeDescriptor*, const AudHostApi* host)
+      : AudNodeBase(0), host_(host) {}
+
+ protected:
+  void renderRange(const AudProcessContext&, uint32_t, uint32_t) override {}
+
+  // Parameter events never get here: they address the node itself, which
+  // has no parameters, and AudNodeBase takes them.
+  void handleEvent(const AudEvent& event) override {
+    // Only the engine creates message events and emit_event refuses them;
+    // the node takes no messages (no AUD_NODE_CAP_MESSAGES) and drops any.
+    if (event.type == AUD_EVENT_MESSAGE) return;
+    AudEvent routed = event;
+    routed.port = channelSplitOutput(event);
+    host_->emit_event(host_->host, this, &routed);
+  }
+
+ private:
+  const AudHostApi* host_;
+};
+
+const AudEventPortDescriptor kChannelSplitEventInputs[] = {
+    {sizeof(AudEventPortDescriptor), "in", "Input",
+     AUD_EVENT_PORT_MIDI | AUD_EVENT_PORT_CONTROL, 0},
+};
+
+#define AUD_CHANNEL_SPLIT_OUTPUT(id, name) \
+  {sizeof(AudEventPortDescriptor), id, name, AUD_EVENT_PORT_MIDI, 0}
+
+// Output 0 also carries the events that are no channel voice messages.
+const AudEventPortDescriptor kChannelSplitEventOutputs[] = {
+    {sizeof(AudEventPortDescriptor), "ch1", "Channel 1",
+     AUD_EVENT_PORT_MIDI | AUD_EVENT_PORT_CONTROL, 0},
+    AUD_CHANNEL_SPLIT_OUTPUT("ch2", "Channel 2"),
+    AUD_CHANNEL_SPLIT_OUTPUT("ch3", "Channel 3"),
+    AUD_CHANNEL_SPLIT_OUTPUT("ch4", "Channel 4"),
+    AUD_CHANNEL_SPLIT_OUTPUT("ch5", "Channel 5"),
+    AUD_CHANNEL_SPLIT_OUTPUT("ch6", "Channel 6"),
+    AUD_CHANNEL_SPLIT_OUTPUT("ch7", "Channel 7"),
+    AUD_CHANNEL_SPLIT_OUTPUT("ch8", "Channel 8"),
+    AUD_CHANNEL_SPLIT_OUTPUT("ch9", "Channel 9"),
+    AUD_CHANNEL_SPLIT_OUTPUT("ch10", "Channel 10"),
+    AUD_CHANNEL_SPLIT_OUTPUT("ch11", "Channel 11"),
+    AUD_CHANNEL_SPLIT_OUTPUT("ch12", "Channel 12"),
+    AUD_CHANNEL_SPLIT_OUTPUT("ch13", "Channel 13"),
+    AUD_CHANNEL_SPLIT_OUTPUT("ch14", "Channel 14"),
+    AUD_CHANNEL_SPLIT_OUTPUT("ch15", "Channel 15"),
+    AUD_CHANNEL_SPLIT_OUTPUT("ch16", "Channel 16"),
+};
+
+const AudNodeVTable kChannelSplitVTable =
+    AudNodeVTableFor<ChannelSplit>::vtable();
+
+const AudNodeDescriptor kChannelSplitDescriptor = {
+    sizeof(AudNodeDescriptor),
+    AUD_ABI_VERSION_MAJOR,
+    AUD_ABI_VERSION_MINOR,
+    1,
+    AUD_GRAPH_CHANNEL_SPLIT_TYPE_ID,
+    "Channel Split",
+    "Audanika",
+    AUD_NODE_CAP_VARIABLE_BLOCK | AUD_NODE_CAP_EVENTS |
+        AUD_NODE_CAP_EVENT_OUTPUT | AUD_NODE_CAP_PASSES_EVENTS,
+    0,
+    0,
+    0,
+    nullptr,
+    nullptr,
+    1,
+    AUD_CHANNEL_SPLIT_NUM_OUTPUTS,
+    kChannelSplitEventInputs,
+    kChannelSplitEventOutputs,
+    0,
+    0,
+    nullptr,
+    nullptr,
+    &kChannelSplitVTable,
+};
+
 }  // namespace
 
 int32_t registerReferenceNodes(const AudHostApi* host) {
   const AudNodeDescriptor* descriptors[] = {
-      &kOscillatorDescriptor, &kMixerDescriptor, &kFilterDescriptor};
+      &kOscillatorDescriptor, &kMixerDescriptor, &kFilterDescriptor,
+      &kChannelSplitDescriptor};
   for (const AudNodeDescriptor* descriptor : descriptors) {
     const int32_t result = host->register_node_type(host->host, descriptor);
     if (result != AUD_OK) return result;

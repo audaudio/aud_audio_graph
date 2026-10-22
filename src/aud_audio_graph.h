@@ -48,6 +48,7 @@ typedef struct AudGraph AudGraph;
 #define AUD_GRAPH_OSCILLATOR_TYPE_ID "aud.graph.oscillator"
 #define AUD_GRAPH_MIXER_TYPE_ID "aud.graph.mixer"
 #define AUD_GRAPH_FILTER_TYPE_ID "aud.graph.filter"
+#define AUD_GRAPH_CHANNEL_SPLIT_TYPE_ID "aud.graph.channel_split"
 
 // The handle of the graph itself.
 #define AUD_GRAPH_NODE 0
@@ -109,6 +110,10 @@ enum {
   AUD_FILTER_PARAM_CUTOFF = 0,
   AUD_FILTER_PARAM_RESONANCE = 1,
   AUD_FILTER_PARAM_MODE = 2,  // 0 low, 1 high, 2 band, 3 notch
+  // The event outputs of the channel split, which has no parameters:
+  // output n carries UMP channel n (MIDI channel n + 1), output 0 also
+  // every event that is no channel voice message.
+  AUD_CHANNEL_SPLIT_NUM_OUTPUTS = 16,
 };
 
 // How a graph is created. Zero means the default.
@@ -127,7 +132,12 @@ typedef struct AudGraphConfig {
   uint32_t event_queue_capacity;    // 0 = 4096
   uint32_t scheduler_capacity;      // 0 = 4096
   uint32_t notification_capacity;   // 0 = 1024
-  uint32_t max_events_per_block;    // 0 = 1024, the budget of interop-002
+  // 0 = 1024, the budget of interop-002. The events the nodes emit in a
+  // block share an arena as large as the block's event table, 3 *
+  // max_events_per_block + 768 entries: an event takes one entry per
+  // connection it leaves on, beyond the arena it is dropped and counted
+  // (AUD_ERROR_QUEUE_FULL).
+  uint32_t max_events_per_block;
   uint32_t fade_frames;             // 0 = 5 ms at the sample rate
   uint32_t max_tail_frames;         // 0 = 10 s at the sample rate
   int64_t lookahead_ns;             // 0 = 10 s
@@ -778,7 +788,10 @@ AUD_EXPORT int32_t aud_graph_render_load(const AudGraph* graph,
 // [realtime] Renders one block into the host's buses: the render function
 // of plugin-002, `user` is the graph. Blocks longer than the prepared
 // maximum are refused with AUD_ERROR_INVALID_ARGUMENT and silence; a graph
-// that is not running renders silence and returns AUD_OK.
+// that is not running renders silence and returns AUD_OK. The events of
+// the request at one offset reach a node in their order - a bank select
+// before its program change -, but for the rule of interop-002 that puts
+// note offs before the rest and note ons behind it (ticket 37).
 AUD_EXPORT int32_t aud_graph_render(void* user, const AudRenderRequest* request);
 
 // [realtime] Renders one block like aud_graph_render and hands the events

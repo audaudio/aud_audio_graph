@@ -21,9 +21,11 @@ The engine behind `src/aud_audio_graph.h`, built on the contracts of
   with fixed capacities that refuse instead of dropping, a per-block budget,
   a time-ordered scheduler with a 10 s lookahead for events in sample, host
   or beat time, pre-delivery by the path latency, cancellation by id or
-  node, late events played at the block start or dropped, running notes
-  closed on retirement, stop and reset, lossy taps, a notification thread
-  that wakes the control thread.
+  node, late events played at the block start or dropped, the events of
+  one offset in the order they came - note offs first, note ons last -,
+  those of one render request too (ticket 37), running notes closed on
+  retirement, stop and reset, lossy taps, a notification thread that
+  wakes the control thread.
 - The lifecycle (lifecycle-001): created, prepared, running, suspended,
   stopped, disposed; a re-prepare for a new sample rate or block size.
 - Time (time-001): the stream's host times feed the filter of the core,
@@ -34,8 +36,23 @@ The engine behind `src/aud_audio_graph.h`, built on the contracts of
 - The render function of plugin-002, `aud_graph_render`, with host buses
   and events, and the offline renderer over a virtual timeline.
 - The reference nodes `aud.graph.oscillator`, `aud.graph.mixer`,
-  `aud.graph.filter`, `aud.graph.feedback` and `aud.graph.tap`;
-  `aud.core.gain` of the core is registered by the Dart side.
+  `aud.graph.filter`, `aud.graph.channel_split`, `aud.graph.feedback` and
+  `aud.graph.tap`; `aud.core.gain` of the core is registered by the Dart
+  side. `aud.graph.channel_split` hands every channel voice message of its
+  event input to the event output of its MIDI channel, `ch1` to `ch16`,
+  and every other event to `ch1` - e.g. to play an instrument of its own
+  per MIDI channel of a plugin host. It declares
+  `AUD_NODE_CAP_PASSES_EVENTS`, and the engine treats every node with the
+  flag alike, e.g. `aud.midi.input` and `aud.midi.output`: the nodes
+  behind it track the notes it hands them, 256 per node, and close them
+  on a stop or a prepare, once each; the engine refuses it no note on,
+  closes the notes it handed out of the graph on the outputs they left
+  on, 256 per node, and, when it is removed, hands it the note offs of
+  those it took, as far as its own tracker of 256 notes holds them. The
+  events the nodes emit in a block share an arena as large as the block's
+  event table, 3 × `max_events_per_block` + 768 entries: an event takes
+  one entry per connection it leaves on, beyond the arena it is dropped
+  and counted.
 
 ## The resources of the process (ticket 25)
 

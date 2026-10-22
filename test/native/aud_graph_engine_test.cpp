@@ -6,12 +6,16 @@
 
 // The native tests of what ticket 20 added to the engine: the host's event
 // output and freewheel flag, the node park for state calls, the tail of
-// the program, the policy of a full note tracker and the debug watchdog.
+// the program, the policy of a full note tracker and the debug watchdog;
+// and those of ticket 37: the order of the events at one offset and the
+// notes behind a node that passes its events on.
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "aud_audio_graph.h"
@@ -366,6 +370,127 @@ AUD_TEST(keeps_a_short_note_in_order_and_retriggers_a_sounding_one) {
   AUD_CHECK(g_records.size() == 2);
   AUD_CHECK(aud_ump_is_note_off(g_records[0].word0, 0) &&
             aud_ump_is_note_on(g_records[1].word0, 0));
+}
+
+AUD_TEST(keeps_the_events_of_a_render_request_at_one_offset_in_order) {
+  Fixture f;
+  const int32_t recorder = f.node("aud.test.recorder");
+  f.commit([&] {
+    AUD_CHECK(aud_graph_connect_events(f.graph, AUD_GRAPH_NODE, 0, recorder,
+                                       0) == AUD_OK);
+  });
+  aud_graph_start(f.graph);
+  f.render(256);
+  // The first word of every event the recorder received, in its order.
+  const auto received = [] {
+    std::vector<uint32_t> words;
+    for (const Record& r : g_records) words.push_back(r.word0);
+    return words;
+  };
+  // The start of a song on 16 MIDI channels, all at offset 0 (ticket 37):
+  // a bank select - CC 0, then CC 32 - before its program change, then the
+  // first note. The controllers and program changes keep their order, the
+  // note ons follow in theirs; the table sorts 64 events of one offset.
+  std::vector<AudEvent> song;
+  std::vector<uint32_t> expected;
+  std::vector<uint32_t> notes;
+  for (uint32_t channel = 0; channel < 16; ++channel) {
+    const uint32_t words[3] = {ccWord(0, 1, channel),
+                               ccWord(32, channel, channel),
+                               aud_ump_midi1_word(0, 0xC0 | channel, 5, 0)};
+    for (const uint32_t& word : words) {
+      song.push_back(aud_event_ump(&word, 1, 0, 0));
+      expected.push_back(word);
+    }
+    song.push_back(noteOn(60 + channel, 100, 0, channel));
+    notes.push_back(song.back().words[0]);
+  }
+  expected.insert(expected.end(), notes.begin(), notes.end());
+  AUD_CHECK(f.render(256, nullptr, song.data(),
+                     static_cast<uint32_t>(song.size())) == AUD_OK);
+  AUD_CHECK(received() == expected);
+  // A longer run of 300 control changes at one offset, the same rank all
+  // of them, arrives in its order too.
+  std::vector<AudEvent> run;
+  expected.clear();
+  for (uint32_t i = 0; i < 300; ++i) {
+    const uint32_t word = ccWord(i % 120, i / 120);
+    run.push_back(aud_event_ump(&word, 1, 17, 0));
+    expected.push_back(word);
+  }
+  g_records.clear();
+  AUD_CHECK(f.render(256, nullptr, run.data(),
+                     static_cast<uint32_t>(run.size())) == AUD_OK);
+  AUD_CHECK(received() == expected);
+  AUD_CHECK(f.stats().events_dropped == 0);
+}
+
+AUD_TEST(closes_no_note_through_a_node_that_passes_its_events_on) {
+  // aud.test.thru: the emitter, passing its events on and reset when the
+  // transport stops, like the recorder behind it (ticket 37).
+  static const AudNodeDescriptor kThru = [] {
+    AudNodeDescriptor d = kEmitterDescriptor;
+    d.type_id = "aud.test.thru";
+    d.capabilities |= AUD_NODE_CAP_PASSES_EVENTS | AUD_NODE_CAP_RESET_ON_STOP;
+    return d;
+  }();
+  Fixture f;
+  const AudHostApi* host = aud_graph_host_api(f.graph);
+  AUD_CHECK(host->register_node_type(host->host, &kThru) == AUD_OK);
+  const int32_t thru = f.node("aud.test.thru");
+  const int32_t recorder = f.node("aud.test.recorder");
+  f.commit([&] {
+    AUD_CHECK(aud_graph_connect_events(f.graph, AUD_GRAPH_NODE, 0, thru, 0) ==
+              AUD_OK);
+    AUD_CHECK(aud_graph_connect_events(f.graph, thru, 0, recorder, 0) ==
+              AUD_OK);
+    AUD_CHECK(aud_graph_connect_events(f.graph, thru, 0, AUD_GRAPH_NODE, 0) ==
+              AUD_OK);
+  });
+  aud_graph_start(f.graph);
+  AUD_CHECK(f.request(AUD_TRANSPORT_REQUEST_START) == AUD_OK);
+  f.render(256);
+  // The pitches of the note offs at offset 0 the recorder received and of
+  // those the thru sent out of the graph, each sorted.
+  const auto closed = [&] {
+    std::vector<uint32_t> recorded;
+    for (const Record& r : g_records) {
+      if (r.offset == 0 && aud_ump_is_note_off(r.word0, r.word1)) {
+        recorded.push_back(aud_ump_note(r.word0));
+      }
+    }
+    std::vector<uint32_t> sent;
+    for (const AudGraphNotification& n : f.takeAll()) {
+      if (n.type == AUD_NOTIFY_EVENT && n.node == thru &&
+          aud_ump_is_note_off(n.event.words[0], n.event.words[1])) {
+        sent.push_back(aud_ump_note(n.event.words[0]));
+      }
+    }
+    std::sort(recorded.begin(), recorded.end());
+    std::sort(sent.begin(), sent.end());
+    return std::make_pair(recorded, sent);
+  };
+  const AudEvent held[3] = {noteOn(60), noteOn(64), noteOn(67)};
+  AUD_CHECK(f.render(256, nullptr, held, 3) == AUD_OK);
+  f.takeAll();
+  g_records.clear();
+  // A stop of the transport resets both: the recorder closes the notes the
+  // thru handed it, the engine those the thru handed out of the graph,
+  // one note off each.
+  AUD_CHECK(f.request(AUD_TRANSPORT_REQUEST_STOP) == AUD_OK);
+  f.render(256);
+  const std::vector<uint32_t> chord = {60, 64, 67};
+  AUD_CHECK(g_records.size() == 3);
+  AUD_CHECK(closed() == std::make_pair(chord, chord));
+  // A stop of the graph closes them the same way.
+  AUD_CHECK(f.render(256, nullptr, held, 3) == AUD_OK);
+  f.takeAll();
+  g_records.clear();
+  AUD_CHECK(aud_graph_stop(f.graph) == AUD_OK);
+  AUD_CHECK(aud_graph_start(f.graph) == AUD_OK);
+  f.render(256);
+  AUD_CHECK(g_records.size() == 3);
+  AUD_CHECK(closed() == std::make_pair(chord, chord));
 }
 
 AUD_TEST(refuses_descriptors_without_parameter_or_string_ids) {

@@ -23,9 +23,11 @@ Die Engine hinter `src/aud_audio_graph.h`, gebaut auf den Verträgen von
   Block, ein zeitgeordneter Scheduler mit 10 s Vorausschau für Events in
   Sample-, Host- oder Beat-Zeit, die Vorab-Zustellung um die Pfadlatenz,
   der Abbruch nach ID oder Node, späte Events am Blockanfang gespielt oder
-  verworfen, klingende Noten beim Ausscheiden, beim Stopp und beim Reset
-  geschlossen, verlustbehaftete Taps, ein Benachrichtigungs-Thread, der
-  den Control-Thread weckt.
+  verworfen, die Events eines Offsets in der Reihenfolge, in der sie
+  kamen - Note-Offs zuerst, Note-Ons zuletzt -, auch die eines
+  Render-Requests (Ticket 37), klingende Noten beim Ausscheiden, beim
+  Stopp und beim Reset geschlossen, verlustbehaftete Taps, ein
+  Benachrichtigungs-Thread, der den Control-Thread weckt.
 - Der Lebenszyklus (lifecycle-001): created, prepared, running,
   suspended, stopped, disposed; ein erneutes Prepare für eine neue
   Abtastrate oder Blockgröße.
@@ -37,8 +39,24 @@ Die Engine hinter `src/aud_audio_graph.h`, gebaut auf den Verträgen von
 - Die Render-Funktion von plugin-002, `aud_graph_render`, mit Host-Bussen
   und Events, und der Offline-Renderer über einer virtuellen Zeitachse.
 - Die Referenzknoten `aud.graph.oscillator`, `aud.graph.mixer`,
-  `aud.graph.filter`, `aud.graph.feedback` und `aud.graph.tap`;
-  `aud.core.gain` des Cores registriert die Dart-Seite.
+  `aud.graph.filter`, `aud.graph.channel_split`, `aud.graph.feedback` und
+  `aud.graph.tap`; `aud.core.gain` des Cores registriert die Dart-Seite.
+  `aud.graph.channel_split` gibt jede Channel-Voice-Nachricht seines
+  Event-Eingangs an den Event-Ausgang ihres MIDI-Kanals weiter, `ch1` bis
+  `ch16`, und jedes andere Event an `ch1` - etwa um pro MIDI-Kanal eines
+  Plugin-Hosts ein eigenes Instrument zu spielen. Er deklariert
+  `AUD_NODE_CAP_PASSES_EVENTS`, und die Engine behandelt jeden Knoten mit
+  dem Flag gleich, etwa `aud.midi.input` und `aud.midi.output`: Die
+  Knoten dahinter verfolgen die Noten, die er ihnen gibt, 256 pro Knoten,
+  und schließen sie bei einem Stopp oder einem Prepare, je einmal; die
+  Engine verwirft ihm kein Note-On, schließt die Noten, die er aus dem
+  Graphen gab, auf den Ausgängen, auf denen sie gingen, 256 pro Knoten,
+  und gibt ihm, wenn er entfernt wird, die Note-Offs der Noten, die er
+  nahm, soweit sein eigener Tracker von 256 Noten sie hält. Die Events,
+  die die Knoten in einem Block emittieren, teilen sich einen Bereich so
+  groß wie die Event-Tabelle des Blocks, 3 × `max_events_per_block` + 768
+  Einträge: Ein Event belegt einen Eintrag pro Verbindung, über die es
+  geht, jenseits des Bereichs wird es verworfen und gezählt.
 
 ## Die Ressourcen des Prozesses (Ticket 25)
 

@@ -1145,7 +1145,11 @@ AUD_EXPORT AudGraph* aud_graph_create(const AudGraphConfig* config) {
   // releases need carries over to the next block.
   graph->blockEvents.resize(3 * c.max_events_per_block + NoteTracker::kCapacity +
                             kMaxPedalOffs);
-  graph->emitted.resize(c.max_events_per_block);
+  // The events the nodes emit in a block, as many as the block's events:
+  // a node that hands its events on - a channel split behind a full block
+  // - hands on every one of them (ticket 37). An event takes one entry per
+  // connection it leaves on; beyond the arena it is dropped and counted.
+  graph->emitted.resize(graph->blockEvents.size());
   graph->nodeEvents.resize(graph->blockEvents.size() + graph->emitted.size());
   graph->deferred.resize(graph->nodeEvents.size());
   graph->nodeRanges.resize(c.max_nodes);
@@ -1336,6 +1340,8 @@ AUD_EXPORT int32_t aud_graph_create_node(AudGraph* graph, const char* type_id,
   }
   auto instance = std::make_unique<NodeInstance>();
   instance->descriptor = type;
+  instance->passesEvents =
+      (type->capabilities & AUD_NODE_CAP_PASSES_EVENTS) != 0;
   const AudNodeConfig empty{sizeof(AudNodeConfig), 0, nullptr, 0, nullptr, 0, 0};
   const AudNodeConfig& c = config == nullptr ? empty : *config;
   int32_t result =

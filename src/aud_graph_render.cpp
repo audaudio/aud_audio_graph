@@ -224,10 +224,11 @@ bool addBlockEvent(AudGraph* graph, uint32_t node, const AudEvent& event,
     releaseMessage(graph, event);
     return false;
   }
-  BlockEvent& entry = graph->blockEvents[graph->numBlockEvents++];
+  BlockEvent& entry = graph->blockEvents[graph->numBlockEvents];
   entry.node = node;
   entry.rank = rankOf(event, graph->current->nodes[node].instance);
   entry.sequence = sequence;
+  entry.arrival = graph->numBlockEvents++;
   entry.event = event;
   entry.event.struct_size = sizeof(AudEvent);
   entry.event.sample_offset = offset;
@@ -279,6 +280,22 @@ void sortOutputEvents(AudHostRenderRequest* host) {
   }
 }
 
+// The first route of an event output of a node: the routes are sorted by
+// (node, port), the routes of one output follow it.
+std::vector<EventRoute>::const_iterator firstRoute(const Program* program,
+                                                   uint32_t node,
+                                                   uint32_t port) {
+  EventRoute key;
+  key.fromNode = node;
+  key.fromPort = port;
+  return std::lower_bound(
+      program->routes.begin(), program->routes.end(), key,
+      [](const EventRoute& a, const EventRoute& b) {
+        return a.fromNode < b.fromNode ||
+               (a.fromNode == b.fromNode && a.fromPort < b.fromPort);
+      });
+}
+
 // Routes an event that leaves the graph's event output.
 void routeGraphEvent(AudGraph* graph, const AudEvent& event, uint32_t offset,
                      uint64_t sequence) {
@@ -301,12 +318,15 @@ void routeGraphEvent(AudGraph* graph, const AudEvent& event, uint32_t offset,
 
 // Tracks the note of an event; false for a note on the tracker cannot
 // hold: it is not delivered, since it could never be closed (interop-002).
+// A node that passes its events on hands it on all the same, to nodes
+// that track it (ticket 37).
 bool trackNote(AudGraph* graph, NodeInstance* instance, const AudEvent& event) {
   if (event.type != AUD_EVENT_UMP) return true;
   const uint32_t word0 = event.words[0];
   const uint32_t word1 = event.words[1];
   if (aud_ump_is_note_on(word0, word1)) {
     if (instance->notes.add(noteKey(event))) return true;
+    if (instance->passesEvents) return true;
     graph->diagnostics.trackerFull += 1;
     graph->diagnostics.trackerFullNode = instance->handle;
     graph->eventsDropped.fetch_add(1, std::memory_order_relaxed);
@@ -316,6 +336,24 @@ bool trackNote(AudGraph* graph, NodeInstance* instance, const AudEvent& event) {
     instance->notes.remove(noteKey(event));
   }
   return true;
+}
+
+// The note off that closes a tracked note, at offset 0.
+AudEvent noteOffOf(uint32_t key) {
+  const uint32_t type = key >> 28;
+  const uint32_t group = (key >> 24) & 0xf;
+  const uint32_t channel = (key >> 16) & 0xf;
+  const uint32_t note = (key >> 8) & 0x7f;
+  const uint32_t port = key & 0xff;
+  uint32_t words[4] = {0, 0, 0, 0};
+  uint32_t numWords = 1;
+  if (type == AUD_UMP_TYPE_MIDI2_CHANNEL_VOICE) {
+    aud_ump_midi2_note(group, channel, 0, note, 0x8000, 0, 0, words);
+    numWords = 2;
+  } else {
+    words[0] = aud_ump_midi1_word(group, 0x80 | channel, note, 64);
+  }
+  return aud_event_ump(words, numWords, 0, port);
 }
 
 // Closes the running notes of a node with note offs at the block start.
@@ -333,25 +371,55 @@ bool closeNotes(AudGraph* graph, NodeInstance* instance, uint32_t node,
       notes.count -= i;
       return false;
     }
-    const uint32_t key = instance->notes.notes[i];
-    const uint32_t type = key >> 28;
-    const uint32_t group = (key >> 24) & 0xf;
-    const uint32_t channel = (key >> 16) & 0xf;
-    const uint32_t note = (key >> 8) & 0x7f;
-    const uint32_t port = key & 0xff;
-    uint32_t words[4] = {0, 0, 0, 0};
-    uint32_t numWords = 1;
-    if (type == AUD_UMP_TYPE_MIDI2_CHANNEL_VOICE) {
-      aud_ump_midi2_note(group, channel, 0, note, 0x8000, 0, 0, words);
-      numWords = 2;
-    } else {
-      words[0] = aud_ump_midi1_word(group, 0x80 | channel, note, 64);
-    }
-    AudEvent event = aud_event_ump(words, numWords, 0, port);
-    addBlockEvent(graph, node, event, 0, 0);
+    addBlockEvent(graph, node, noteOffOf(instance->notes.notes[i]), 0, 0);
   }
   instance->notes.count = 0;
   return true;
+}
+
+// Notes a note on or off that a node which passes its events on handed
+// out of the graph, under the output it left on; a note on beyond the
+// tracker leaves all the same and is not closed (ticket 37).
+void notePassed(NodeInstance* instance, const AudEvent& event) {
+  if (event.type != AUD_EVENT_UMP) return;
+  if (aud_ump_is_note_on(event.words[0], event.words[1])) {
+    instance->passedNotes.add(noteKey(event));
+  } else if (aud_ump_is_note_off(event.words[0], event.words[1])) {
+    instance->passedNotes.remove(noteKey(event));
+  }
+}
+
+// Closes the notes a node that passes its events on handed out of the
+// graph, with note offs at the block start on the outputs they left on,
+// and forgets those it took: the nodes behind it close the notes it handed
+// them themselves, so that each gets one note off per note (ticket 37).
+void closePassedNotes(AudGraph* graph, NodeInstance* instance, uint32_t node) {
+  const Program* program = graph->current;
+  NoteTracker& passed = instance->passedNotes;
+  for (uint32_t i = 0; i < passed.count; ++i) {
+    const AudEvent event = noteOffOf(passed.notes[i]);
+    for (auto it = firstRoute(program, node, event.port);
+         it != program->routes.end() && it->fromNode == node &&
+         it->fromPort == event.port;
+         ++it) {
+      if (it->toNode != kGraphTarget) continue;
+      AudEvent routed = event;
+      routed.port = it->toPort;
+      outputEvent(graph, instance->handle, routed, 0);
+    }
+  }
+  passed.count = 0;
+  instance->notes.count = 0;
+}
+
+// Closes the notes of a node for a stop, a prepare or a reset: its own, or
+// those a node that passes its events on handed out of the graph.
+void closeHeldNotes(AudGraph* graph, NodeInstance* instance, uint32_t node) {
+  if (instance->passesEvents) {
+    closePassedNotes(graph, instance, node);
+  } else {
+    closeNotes(graph, instance, node);
+  }
 }
 
 // ............................................................................
@@ -786,7 +854,7 @@ void applyTransportResets(AudGraph* graph) {
     } else if (instance->descriptor->vtable->reset != nullptr) {
       instance->descriptor->vtable->reset(instance->instance, reason);
     }
-    closeNotes(graph, instance, i);
+    closeHeldNotes(graph, instance, i);
   }
 }
 
@@ -1343,15 +1411,16 @@ void drainCommands(AudGraph* graph) {
 
 // Closes the notes a stop or a prepare left open (lifecycle-001): the
 // control thread reset the nodes while no block rendered, the note offs
-// reach them at the start of the first block after the restart.
+// reach them at the start of the first block after the restart. Every
+// node closes its own notes, a node that passes its events on only those
+// it handed out of the graph (ticket 37).
 void closePendingNotes(AudGraph* graph) {
   if (!graph->closeNotesPending) return;
   graph->closeNotesPending = false;
   Program* program = graph->current;
   if (program == nullptr) return;
   for (uint32_t i = 0; i < program->nodes.size(); ++i) {
-    NodeInstance* instance = program->nodes[i].instance;
-    if (instance->notes.count > 0) closeNotes(graph, instance, i);
+    closeHeldNotes(graph, program->nodes[i].instance, i);
   }
 }
 
@@ -1387,6 +1456,11 @@ void deliverPopped(AudGraph* graph) {
   }
 }
 
+// Sorts the table by node, offset, rank and sequence. std::sort is not
+// stable and std::stable_sort may allocate, so the arrival breaks the
+// ties: no two entries compare equal, and events of one sequence - every
+// event of a render request has 0 - keep the order they came in, e.g. a
+// bank select before its program change (ticket 37).
 void sortBlockEvents(AudGraph* graph) {
   BlockEvent* begin = graph->blockEvents.data();
   std::sort(begin, begin + graph->numBlockEvents,
@@ -1396,7 +1470,8 @@ void sortBlockEvents(AudGraph* graph) {
                 return a.event.sample_offset < b.event.sample_offset;
               }
               if (a.rank != b.rank) return a.rank < b.rank;
-              return a.sequence < b.sequence;
+              if (a.sequence != b.sequence) return a.sequence < b.sequence;
+              return a.arrival < b.arrival;
             });
   const Program* program = graph->current;
   const uint32_t nodes = program == nullptr
@@ -2030,7 +2105,8 @@ void publishTransportState(AudGraph* graph) {
 }
 
 // [realtime] A node emits an event: it goes to the nodes connected to the
-// output, or to the control thread.
+// output, or out of the graph, where the engine notes the notes of a node
+// that passes its events on (ticket 37).
 void emitEvent(AudGraph* graph, void* instance, const AudEvent* event) {
   const uint32_t current = graph->currentNode;
   const Program* program = graph->current;
@@ -2043,18 +2119,11 @@ void emitEvent(AudGraph* graph, void* instance, const AudEvent* event) {
   const uint32_t frames = graph->streamTime.frames;
   const uint32_t offset =
       std::min(event->sample_offset, frames == 0 ? 0 : frames - 1);
-  // The routes are sorted by (node, port): the first match is found by
-  // binary search, the loop stops at the first other port.
-  EventRoute key;
-  key.fromNode = current;
-  key.fromPort = event->port;
+  // The first route is found by binary search, the loop stops at the
+  // first other port.
   const auto routesEnd = program->routes.end();
-  auto it = std::lower_bound(
-      program->routes.begin(), routesEnd, key,
-      [](const EventRoute& a, const EventRoute& b) {
-        return a.fromNode < b.fromNode ||
-               (a.fromNode == b.fromNode && a.fromPort < b.fromPort);
-      });
+  auto it = firstRoute(program, current, event->port);
+  bool leaves = false;
   for (; it != routesEnd && it->fromNode == current &&
          it->fromPort == event->port;
        ++it) {
@@ -2063,6 +2132,7 @@ void emitEvent(AudGraph* graph, void* instance, const AudEvent* event) {
       AudEvent routed = *event;
       routed.port = route.toPort;
       outputEvent(graph, node.instance->handle, routed, offset);
+      leaves = true;
       continue;
     }
     if (graph->numEmitted >= graph->emitted.size()) {
@@ -2085,6 +2155,7 @@ void emitEvent(AudGraph* graph, void* instance, const AudEvent* event) {
     }
     range.emittedTail = index;
   }
+  if (leaves && node.instance->passesEvents) notePassed(node.instance, *event);
 }
 
 namespace {

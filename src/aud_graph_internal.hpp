@@ -290,6 +290,11 @@ struct NodeInstance {
   int32_t handle = 0;
   const AudNodeDescriptor* descriptor = nullptr;
   Builtin builtin = Builtin::none;
+  // AUD_NODE_CAP_PASSES_EVENTS (ticket 37): the nodes behind it track the
+  // notes it hands them, so its tracker refuses no note on, and a stop, a
+  // prepare or a reset closes there only the notes it handed out of the
+  // graph.
+  bool passesEvents = false;
   void* instance = nullptr;
   std::vector<uint32_t> inputChannels;
   std::vector<uint32_t> outputChannels;
@@ -310,6 +315,9 @@ struct NodeInstance {
   // Realtime thread.
   uint32_t rtIndex = UINT32_MAX;  // index in the adopted program
   NoteTracker notes;
+  // The notes a node that passes its events on handed out of the graph,
+  // each with the output it left on in the port of its key (ticket 37).
+  NoteTracker passedNotes;
   bool rtRetired = false;
   bool rtDone = false;
   // A transport reset that came while the node was parked (ticket 20); it
@@ -501,10 +509,17 @@ struct TransportProvider {
 // ............................................................................
 // The per-block event table
 
+// An entry of the table, ordered by node, offset, rank, sequence and
+// arrival. Several paths add events of one sequence - every event of a
+// render request, the note offs that close the notes of a node, the
+// emitted events a parked node postpones, an event of the graph's event
+// output on two inputs of one node -; the place an event took in the
+// table keeps them in the order they came (ticket 37).
 struct BlockEvent {
   uint32_t node = 0;  // program node index
   uint32_t rank = 0;  // note off 0, other 1, note on 2
   uint64_t sequence = 0;
+  uint32_t arrival = 0;  // the place in the table before the sort
   AudEvent event{};
 };
 

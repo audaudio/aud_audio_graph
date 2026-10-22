@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.5.4 - 2026-10-22
+
+### Added
+
+- Add the reference node aud.graph.channel_split (ticket 37)
+
+- One event input, 16 event outputs: a channel voice event leaves on the output of its MIDI channel
+
+- Other events leave on output 0
+
+- Native tests for render requests and documents of the headless host
+
+- Add room and one note off per note behind the channel split
+
+- Size the arena of emitted events like the block's event table, so a full block reaches every receiver behind the split
+
+- Treat the split as a router: the nodes behind it close their own notes on a stop or a prepare, once each; the split refuses no note on
+
+- Close the notes the split handed out of the graph on a restart, and those it handed on when it is removed
+
+- Document the remaining limit of the arena in the header, README.md and README.de.md; regenerate the bindings
+
+- Tell the split callbacks apart at 10.6 ms in the timing test, so a slow render under tsan does not fail it
+
+- Add the arrival order and pass-through nodes to the engine
+
+- Keep the events of one node, offset, rank and sequence in the order they came: their place in the block's table breaks the ties of std::sort, without allocation, so a bank select of a render request stays before its program change
+
+- Treat every node with AUD_NODE_CAP_PASSES_EVENTS like the channel split, which declares the flag now: the nodes behind it close the notes it hands them, once each; the engine refuses it no note on and closes the notes it handed out of the graph on the outputs they left on, on a stop, a prepare and a transport reset
+
+- Replace the engine-internal router output of the split with the flag
+
+- Test the order of a render request at one offset and a pass-through node on a transport stop and a graph stop
+
+- Document both in aud_audio_graph.h, README.md and README.de.md; regenerate the bindings
+
+
+### Changed
+
+- Keep the split callback timing test stable under tsan
+- Sleep the callback after each pair of renders, so the gaps between pairs never fall below it
+- Tell the gaps within a pair apart at 5 ms instead of 1 ms, since a tsan render can take longer than 1 ms
+
 ## 0.5.3 - 2026-10-15
 
 ## 0.5.2 - 2026-10-14

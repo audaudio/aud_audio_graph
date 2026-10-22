@@ -16,7 +16,7 @@
     "Compiler: topological order, feedback nodes split into reader and writer, latency alignment with the low-latency opt-out, buffer reuse by lifetime (graph-001)",
     "Realtime path: adoption of programs with fades and retirement (graph-003), parameter and event queues, time-ordered scheduler with leads, running-note tracker, lossy taps (interop-002)",
     "Time and transport: time filter feed, synthesized host time, internal transport with segments per block, registered providers (time-001)",
-    "Reference nodes aud.graph.oscillator, aud.graph.mixer, aud.graph.filter, aud.graph.feedback, aud.graph.tap",
+    "Reference nodes aud.graph.oscillator, aud.graph.mixer, aud.graph.filter, aud.graph.feedback, aud.graph.tap and aud.graph.channel_split (ticket 37): one event input, an event output per MIDI channel, other events on output 0",
     "Headless host (plugin-002): aud_host_* loads graph documents with presets, state blobs and assets without Dart, saves the whole state, stable parameter ids (FNV-1a, 31 bits), latency, tail, events for the host",
     "Dart: AudGraph, AudNode, AudGraphTransaction, AudGraphNotification, AudGraphDocument (JSON schema, assets), AudHost, AudOfflineRenderer, AudWavFile, AudLoad, AudNodeMessage, AudCacheUsage, AudEventSource (AudEventSourceFfi with native addresses), AudEventSourceStats, AudGraphTiming, AudGraphLoad",
     "Native tests under ASan/UBSan, RealtimeSanitizer and ThreadSanitizer with stress tests and the debug watchdog: scripts/test-native.js"

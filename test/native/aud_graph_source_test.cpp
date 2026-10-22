@@ -964,19 +964,28 @@ AUD_TEST(graph_timing_histogram_takes_the_gap_of_split_callbacks) {
   aud_graph_start(f.graph);
   TimedStream stream(f);
   // A stream that splits a callback of 10.7 ms into two renders back to
-  // back: half of the gaps are near zero, p99.9 is the callback.
-  const auto from = std::chrono::steady_clock::now();
+  // back: half of the gaps are near zero, p99.9 is the callback. The gap
+  // within a pair is the time one render takes, which the thread
+  // sanitizer on a loaded host stretches by milliseconds. The test sleeps
+  // the callback after each pair, so no gap between the pairs falls below
+  // it; the bin of 10.6 ms just below the callback tells the gaps apart,
+  // and a render may take up to 10.6 ms.
   for (uint32_t i = 0; i < 20; ++i) {
-    std::this_thread::sleep_until(from + std::chrono::nanoseconds(10666667) * i);
+    if (i > 0) std::this_thread::sleep_for(std::chrono::nanoseconds(10666667));
     stream.render(256);
     stream.render(256);
   }
   const AudGraphTiming t = timingOf(f.graph);
   AUD_CHECK(periodTotal(t) == 39);
-  uint64_t belowOneMs = 0;
-  for (uint32_t i = 0; i < 10; ++i) belowOneMs += t.period_histogram[i];
-  AUD_CHECK(belowOneMs == 20);
-  AUD_CHECK(periodPercentileNs(t, 0.5) <= 1000000);
+  const uint32_t callbackBin = 106;  // 10.6 ms
+  uint64_t belowCallback = 0;
+  for (uint32_t i = 0; i < callbackBin; ++i) {
+    belowCallback += t.period_histogram[i];
+  }
+  AUD_CHECK(belowCallback == 20);
+  // The median, as the Dart side reads it, is a gap within a pair.
+  AUD_CHECK(periodPercentileNs(t, 0.5) <=
+            int64_t{callbackBin} * AUD_GRAPH_PERIOD_BIN_NS);
   // With 39 gaps p99.9 is the longest one; a loaded host overshoots its
   // sleep by several milliseconds, so only the lower bound is tight.
   const int64_t p999 = periodPercentileNs(t, 0.999);
