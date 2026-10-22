@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.4 - 2026-10-22
 
 ### Added
 
@@ -25,11 +25,17 @@
 - Tell the split callbacks apart at 10.6 ms in the timing test, so a slow render under tsan does not fail it
 
 - Add the arrival order and pass-through nodes to the engine
+
 - Keep the events of one node, offset, rank and sequence in the order they came: their place in the block's table breaks the ties of std::sort, without allocation, so a bank select of a render request stays before its program change
+
 - Treat every node with AUD_NODE_CAP_PASSES_EVENTS like the channel split, which declares the flag now: the nodes behind it close the notes it hands them, once each; the engine refuses it no note on and closes the notes it handed out of the graph on the outputs they left on, on a stop, a prepare and a transport reset
+
 - Replace the engine-internal router output of the split with the flag
+
 - Test the order of a render request at one offset and a pass-through node on a transport stop and a graph stop
+
 - Document both in aud_audio_graph.h, README.md and README.de.md; regenerate the bindings
+
 
 ### Changed
 
@@ -76,7 +82,6 @@
 - The window of AudGraphLoad may be up to one render longer than asked
 
 - The README examples compile; the p99 of 47 voices on the Galaxy Tab S4 is 1.29
-
 
 ## 0.5.1 - 2026-10-12
 
@@ -127,7 +132,6 @@
 - The capacity of a source is at most 2^20; the Dart example attaches, detaches, sets latencyNs and lists graph.eventSources
 
 - Statics after the public getters; the stress tests carry their numbers in AUD_CHECK_MSG instead of printing them
-
 
 ## 0.5.0 - 2026-10-12
 
@@ -197,7 +201,6 @@
 
 - The error tests check the type and the message; AudCacheUsage and AudNodeMessage get their landmarks
 
-
 ## 0.4.0 - 2026-10-09
 
 ### Changed
@@ -232,7 +235,6 @@
 - Refuse descriptors without parameter or string ids
 
 - Add AudHost and the asset table of the graph document on the Dart side
-
 
 ## 0.2.0 - 2026-10-08
 
