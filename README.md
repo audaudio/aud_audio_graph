@@ -39,7 +39,14 @@ The engine behind `src/aud_audio_graph.h`, built on the contracts of
   side. `aud.graph.channel_split` hands every channel voice message of its
   event input to the event output of its MIDI channel, `ch1` to `ch16`,
   and every other event to `ch1` - e.g. to play an instrument of its own
-  per MIDI channel of a plugin host.
+  per MIDI channel of a plugin host. The nodes behind it track the notes
+  it hands them, 256 per node, and close them on a stop or a prepare; the
+  split drops no note on, closes the notes it handed out of the graph and,
+  when it is removed, those it handed on, as far as its own tracker of 256
+  notes holds them. The events the nodes emit in a block share an arena
+  as large as the block's event table, 3 × `max_events_per_block` + 768
+  entries: an event takes one entry per connection it leaves on, beyond
+  the arena it is dropped and counted.
 
 ## The resources of the process (ticket 25)
 

@@ -42,7 +42,16 @@ Die Engine hinter `src/aud_audio_graph.h`, gebaut auf den Verträgen von
   `aud.graph.channel_split` gibt jede Channel-Voice-Nachricht seines
   Event-Eingangs an den Event-Ausgang ihres MIDI-Kanals weiter, `ch1` bis
   `ch16`, und jedes andere Event an `ch1` - etwa um pro MIDI-Kanal eines
-  Plugin-Hosts ein eigenes Instrument zu spielen.
+  Plugin-Hosts ein eigenes Instrument zu spielen. Die Knoten dahinter
+  verfolgen die Noten, die er ihnen gibt, 256 pro Knoten, und schließen sie
+  bei einem Stopp oder einem Prepare; der Split verwirft kein Note-On,
+  schließt die Noten, die er aus dem Graphen gab, und, wenn er entfernt
+  wird, die, die er weitergab, soweit sein eigener Tracker von 256 Noten
+  sie hält. Die Events, die die Knoten in einem Block emittieren, teilen
+  sich einen Bereich so groß wie die Event-Tabelle des Blocks, 3 ×
+  `max_events_per_block` + 768 Einträge: Ein Event belegt einen Eintrag
+  pro Verbindung, über die es geht, jenseits des Bereichs wird es verworfen
+  und gezählt.
 
 ## Die Ressourcen des Prozesses (Ticket 25)
 

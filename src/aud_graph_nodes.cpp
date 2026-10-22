@@ -411,7 +411,16 @@ const AudNodeDescriptor kFilterDescriptor = {
 // host to one instrument per channel. Output n carries UMP channel n, MIDI
 // channel n + 1, of every group; every other event leaves on output 0. An
 // event keeps its offset, flags and words, only its port changes. The node
-// has no buses, no parameters and no state; it never allocates.
+// has no buses, no parameters and no state; it never allocates. The engine
+// treats it as a router: the nodes behind it track the notes it hands them.
+
+// The output of an event: the channel of a channel voice message, 0 for
+// every other event.
+uint32_t channelSplitOutput(const AudEvent& event) {
+  if (event.type != AUD_EVENT_UMP) return 0;
+  if (!aud_ump_is_channel_voice(event.words[0])) return 0;
+  return aud_ump_channel(event.words[0]);
+}
 
 class ChannelSplit : public AudNodeBase {
  public:
@@ -428,19 +437,11 @@ class ChannelSplit : public AudNodeBase {
     // the node takes no messages (no AUD_NODE_CAP_MESSAGES) and drops any.
     if (event.type == AUD_EVENT_MESSAGE) return;
     AudEvent routed = event;
-    routed.port = outputOf(event);
+    routed.port = channelSplitOutput(event);
     host_->emit_event(host_->host, this, &routed);
   }
 
  private:
-  // The output of an event: the channel of a channel voice message, 0 for
-  // every other event.
-  static uint32_t outputOf(const AudEvent& event) {
-    if (event.type != AUD_EVENT_UMP) return 0;
-    if (!aud_ump_is_channel_voice(event.words[0])) return 0;
-    return aud_ump_channel(event.words[0]);
-  }
-
   const AudHostApi* host_;
 };
 
@@ -513,6 +514,10 @@ int32_t registerReferenceNodes(const AudHostApi* host) {
     if (result != AUD_OK) return result;
   }
   return AUD_OK;
+}
+
+RouterOutput routerOutputOf(const AudNodeDescriptor* descriptor) {
+  return descriptor == &kChannelSplitDescriptor ? channelSplitOutput : nullptr;
 }
 
 }  // namespace aud

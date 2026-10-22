@@ -156,6 +156,13 @@ struct NoteTracker {
   }
 };
 
+// The event output a router hands an event to (ticket 37). A router is a
+// node that hands every event on unchanged but for its port, sounds
+// nothing and keeps no state: the nodes behind it track the notes it
+// hands them, so its own tracker refuses no note on, and a stop or a
+// prepare closes there only the notes it handed out of the graph.
+using RouterOutput = uint32_t (*)(const AudEvent& event);
+
 // ............................................................................
 // Scheduled events: a pool with one index heap per time domain, each
 // ordered by the domain's value so that the first pending event stops the
@@ -290,6 +297,7 @@ struct NodeInstance {
   int32_t handle = 0;
   const AudNodeDescriptor* descriptor = nullptr;
   Builtin builtin = Builtin::none;
+  RouterOutput routerOutput = nullptr;  // NULL unless a router
   void* instance = nullptr;
   std::vector<uint32_t> inputChannels;
   std::vector<uint32_t> outputChannels;
@@ -784,6 +792,9 @@ int64_t beatNow(AudGraph* graph);
 
 // aud_graph_nodes.cpp: registers the reference nodes.
 int32_t registerReferenceNodes(const AudHostApi* host);
+// aud_graph_nodes.cpp: the output of a reference node that routes events,
+// NULL for every other type (ticket 37).
+RouterOutput routerOutputOf(const AudNodeDescriptor* descriptor);
 
 }  // namespace aud
 

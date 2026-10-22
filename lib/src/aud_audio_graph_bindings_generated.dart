@@ -1418,7 +1418,11 @@ final class AudGraphConfig extends ffi.Struct {
   @ffi.Uint32()
   external int notification_capacity;
 
-  /// 0 = 1024, the budget of interop-002
+  /// 0 = 1024, the budget of interop-002. The events the nodes emit in a
+  /// block share an arena as large as the block's event table, 3 *
+  /// max_events_per_block + 768 entries: an event takes one entry per
+  /// connection it leaves on, beyond the arena it is dropped and counted
+  /// (AUD_ERROR_QUEUE_FULL).
   @ffi.Uint32()
   external int max_events_per_block;
 

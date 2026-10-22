@@ -279,6 +279,22 @@ void sortOutputEvents(AudHostRenderRequest* host) {
   }
 }
 
+// The first route of an event output of a node: the routes are sorted by
+// (node, port), the routes of one output follow it.
+std::vector<EventRoute>::const_iterator firstRoute(const Program* program,
+                                                   uint32_t node,
+                                                   uint32_t port) {
+  EventRoute key;
+  key.fromNode = node;
+  key.fromPort = port;
+  return std::lower_bound(
+      program->routes.begin(), program->routes.end(), key,
+      [](const EventRoute& a, const EventRoute& b) {
+        return a.fromNode < b.fromNode ||
+               (a.fromNode == b.fromNode && a.fromPort < b.fromPort);
+      });
+}
+
 // Routes an event that leaves the graph's event output.
 void routeGraphEvent(AudGraph* graph, const AudEvent& event, uint32_t offset,
                      uint64_t sequence) {
@@ -301,12 +317,14 @@ void routeGraphEvent(AudGraph* graph, const AudEvent& event, uint32_t offset,
 
 // Tracks the note of an event; false for a note on the tracker cannot
 // hold: it is not delivered, since it could never be closed (interop-002).
+// A router hands it on all the same, to nodes that track it (ticket 37).
 bool trackNote(AudGraph* graph, NodeInstance* instance, const AudEvent& event) {
   if (event.type != AUD_EVENT_UMP) return true;
   const uint32_t word0 = event.words[0];
   const uint32_t word1 = event.words[1];
   if (aud_ump_is_note_on(word0, word1)) {
     if (instance->notes.add(noteKey(event))) return true;
+    if (instance->routerOutput != nullptr) return true;
     graph->diagnostics.trackerFull += 1;
     graph->diagnostics.trackerFullNode = instance->handle;
     graph->eventsDropped.fetch_add(1, std::memory_order_relaxed);
@@ -316,6 +334,24 @@ bool trackNote(AudGraph* graph, NodeInstance* instance, const AudEvent& event) {
     instance->notes.remove(noteKey(event));
   }
   return true;
+}
+
+// The note off that closes a tracked note, at offset 0.
+AudEvent noteOffOf(uint32_t key) {
+  const uint32_t type = key >> 28;
+  const uint32_t group = (key >> 24) & 0xf;
+  const uint32_t channel = (key >> 16) & 0xf;
+  const uint32_t note = (key >> 8) & 0x7f;
+  const uint32_t port = key & 0xff;
+  uint32_t words[4] = {0, 0, 0, 0};
+  uint32_t numWords = 1;
+  if (type == AUD_UMP_TYPE_MIDI2_CHANNEL_VOICE) {
+    aud_ump_midi2_note(group, channel, 0, note, 0x8000, 0, 0, words);
+    numWords = 2;
+  } else {
+    words[0] = aud_ump_midi1_word(group, 0x80 | channel, note, 64);
+  }
+  return aud_event_ump(words, numWords, 0, port);
 }
 
 // Closes the running notes of a node with note offs at the block start.
@@ -333,25 +369,32 @@ bool closeNotes(AudGraph* graph, NodeInstance* instance, uint32_t node,
       notes.count -= i;
       return false;
     }
-    const uint32_t key = instance->notes.notes[i];
-    const uint32_t type = key >> 28;
-    const uint32_t group = (key >> 24) & 0xf;
-    const uint32_t channel = (key >> 16) & 0xf;
-    const uint32_t note = (key >> 8) & 0x7f;
-    const uint32_t port = key & 0xff;
-    uint32_t words[4] = {0, 0, 0, 0};
-    uint32_t numWords = 1;
-    if (type == AUD_UMP_TYPE_MIDI2_CHANNEL_VOICE) {
-      aud_ump_midi2_note(group, channel, 0, note, 0x8000, 0, 0, words);
-      numWords = 2;
-    } else {
-      words[0] = aud_ump_midi1_word(group, 0x80 | channel, note, 64);
-    }
-    AudEvent event = aud_event_ump(words, numWords, 0, port);
-    addBlockEvent(graph, node, event, 0, 0);
+    addBlockEvent(graph, node, noteOffOf(instance->notes.notes[i]), 0, 0);
   }
   instance->notes.count = 0;
   return true;
+}
+
+// Closes the notes a router handed out of the graph, with note offs at
+// the block start on the graph's event output, and forgets the rest: the
+// nodes behind the router close the notes it handed them themselves, so
+// that each gets one note off per note (ticket 37).
+void closeRoutedNotes(AudGraph* graph, NodeInstance* instance, uint32_t node) {
+  const Program* program = graph->current;
+  for (uint32_t i = 0; i < instance->notes.count; ++i) {
+    const AudEvent event = noteOffOf(instance->notes.notes[i]);
+    const uint32_t port = instance->routerOutput(event);
+    for (auto it = firstRoute(program, node, port);
+         it != program->routes.end() && it->fromNode == node &&
+         it->fromPort == port;
+         ++it) {
+      if (it->toNode != kGraphTarget) continue;
+      AudEvent routed = event;
+      routed.port = it->toPort;
+      outputEvent(graph, instance->handle, routed, 0);
+    }
+  }
+  instance->notes.count = 0;
 }
 
 // ............................................................................
@@ -1343,7 +1386,9 @@ void drainCommands(AudGraph* graph) {
 
 // Closes the notes a stop or a prepare left open (lifecycle-001): the
 // control thread reset the nodes while no block rendered, the note offs
-// reach them at the start of the first block after the restart.
+// reach them at the start of the first block after the restart. Every
+// node closes its own notes, a router only those it handed out of the
+// graph (ticket 37).
 void closePendingNotes(AudGraph* graph) {
   if (!graph->closeNotesPending) return;
   graph->closeNotesPending = false;
@@ -1351,7 +1396,12 @@ void closePendingNotes(AudGraph* graph) {
   if (program == nullptr) return;
   for (uint32_t i = 0; i < program->nodes.size(); ++i) {
     NodeInstance* instance = program->nodes[i].instance;
-    if (instance->notes.count > 0) closeNotes(graph, instance, i);
+    if (instance->notes.count == 0) continue;
+    if (instance->routerOutput != nullptr) {
+      closeRoutedNotes(graph, instance, i);
+    } else {
+      closeNotes(graph, instance, i);
+    }
   }
 }
 
@@ -2043,18 +2093,10 @@ void emitEvent(AudGraph* graph, void* instance, const AudEvent* event) {
   const uint32_t frames = graph->streamTime.frames;
   const uint32_t offset =
       std::min(event->sample_offset, frames == 0 ? 0 : frames - 1);
-  // The routes are sorted by (node, port): the first match is found by
-  // binary search, the loop stops at the first other port.
-  EventRoute key;
-  key.fromNode = current;
-  key.fromPort = event->port;
+  // The first route is found by binary search, the loop stops at the
+  // first other port.
   const auto routesEnd = program->routes.end();
-  auto it = std::lower_bound(
-      program->routes.begin(), routesEnd, key,
-      [](const EventRoute& a, const EventRoute& b) {
-        return a.fromNode < b.fromNode ||
-               (a.fromNode == b.fromNode && a.fromPort < b.fromPort);
-      });
+  auto it = firstRoute(program, current, event->port);
   for (; it != routesEnd && it->fromNode == current &&
          it->fromPort == event->port;
        ++it) {

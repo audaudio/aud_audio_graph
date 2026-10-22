@@ -132,7 +132,12 @@ typedef struct AudGraphConfig {
   uint32_t event_queue_capacity;    // 0 = 4096
   uint32_t scheduler_capacity;      // 0 = 4096
   uint32_t notification_capacity;   // 0 = 1024
-  uint32_t max_events_per_block;    // 0 = 1024, the budget of interop-002
+  // 0 = 1024, the budget of interop-002. The events the nodes emit in a
+  // block share an arena as large as the block's event table, 3 *
+  // max_events_per_block + 768 entries: an event takes one entry per
+  // connection it leaves on, beyond the arena it is dropped and counted
+  // (AUD_ERROR_QUEUE_FULL).
+  uint32_t max_events_per_block;
   uint32_t fade_frames;             // 0 = 5 ms at the sample rate
   uint32_t max_tail_frames;         // 0 = 10 s at the sample rate
   int64_t lookahead_ns;             // 0 = 10 s

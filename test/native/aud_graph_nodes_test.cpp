@@ -7,9 +7,12 @@
 // The native tests of the reference node aud.graph.channel_split (ticket
 // 37): it hands each channel voice message from the graph's event input to
 // the output of its MIDI channel and every other event to output 0, in a
-// graph built through the C API and in a document of the headless host.
-// A recorder behind each output tells by its instance where an event went.
+// graph built through the C API and in a document of the headless host;
+// a block full of events fits through it, and the nodes behind it close
+// their own notes. A recorder behind each output tells by its instance
+// where an event went.
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -99,6 +102,91 @@ bool received(const void* recorder, const std::vector<AudEvent>& expected) {
   return true;
 }
 
+// Whether `recorder` received one note off at the block start for each of
+// the `count` notes from `first` on UMP channel `channel`, and nothing
+// else.
+bool closedOnce(const void* recorder, uint32_t channel, uint32_t first,
+                uint32_t count) {
+  const std::vector<Record> got = recordsOf(recorder);
+  if (got.size() != count) return false;
+  std::vector<bool> seen(128, false);
+  for (const Record& r : got) {
+    const uint32_t note = aud_ump_note(r.word0);
+    if (r.offset != 0 || !aud_ump_is_note_off(r.word0, r.word1) ||
+        aud_ump_channel(r.word0) != channel || note < first ||
+        note >= first + count || seen[note]) {
+      return false;
+    }
+    seen[note] = true;
+  }
+  return true;
+}
+
+// A split behind the graph's event input with a recorder behind the
+// outputs of kChannels; MIDI channel 16 leaves through the graph's event
+// output, e.g. to an external instrument.
+struct SplitFixture {
+  Fixture f;
+  int32_t split = 0;
+  int32_t receivers[4] = {};
+  const void* recorders[4] = {};
+
+  SplitFixture() {
+    split = f.node(AUD_GRAPH_CHANNEL_SPLIT_TYPE_ID);
+    for (uint32_t k = 0; k < 4; ++k) {
+      receivers[k] = f.node("aud.test.recorder");
+      recorders[k] = g_recorders.back();
+    }
+    f.commit([&] {
+      AUD_CHECK(aud_graph_connect_events(f.graph, AUD_GRAPH_NODE, 0, split,
+                                         0) == AUD_OK);
+      for (uint32_t k = 0; k < 4; ++k) {
+        AUD_CHECK(aud_graph_connect_events(f.graph, split, kChannels[k],
+                                           receivers[k], 0) == AUD_OK);
+      }
+      AUD_CHECK(aud_graph_connect_events(f.graph, split, 15, AUD_GRAPH_NODE,
+                                         0) == AUD_OK);
+    });
+    aud_graph_start(f.graph);
+  }
+
+  // Holds `external` notes from `first` on MIDI channel 16, then the
+  // `count` notes from `first` on the channel of every recorder: note ons
+  // from the graph's event input, one per frame, as many blocks as they
+  // take. The split's own tracker sees the notes in this order.
+  void hold(uint32_t first, uint32_t count, uint32_t external) {
+    std::vector<AudEvent> ons;
+    for (uint32_t note = first; note < first + external; ++note) {
+      ons.push_back(noteOn(note, 100, 0, 15));
+    }
+    for (uint32_t note = first; note < first + count; ++note) {
+      for (uint32_t k = 0; k < 4; ++k) {
+        ons.push_back(noteOn(note, 100, 0, kChannels[k]));
+      }
+    }
+    for (size_t from = 0; from < ons.size(); from += 256) {
+      const uint32_t size =
+          static_cast<uint32_t>(std::min<size_t>(256, ons.size() - from));
+      for (uint32_t i = 0; i < size; ++i) ons[from + i].sample_offset = i;
+      AUD_CHECK(f.render(256, nullptr, ons.data() + from, size) == AUD_OK);
+    }
+  }
+
+  // The note offs on MIDI channel 16 that left the graph's event output
+  // since the notifications were taken last.
+  uint32_t externalNoteOffs() {
+    uint32_t count = 0;
+    for (const AudGraphNotification& n : f.takeAll()) {
+      if (n.type == AUD_NOTIFY_EVENT && n.node == split &&
+          aud_ump_is_note_off(n.event.words[0], n.event.words[1]) &&
+          aud_ump_channel(n.event.words[0]) == 15) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+};
+
 }  // namespace
 
 // ############################################################################
@@ -130,23 +218,7 @@ AUD_TEST(channel_split_describes_one_input_and_sixteen_outputs) {
 }
 
 AUD_TEST(channel_split_routes_each_channel_to_its_output) {
-  Fixture f;
-  const int32_t split = f.node(AUD_GRAPH_CHANNEL_SPLIT_TYPE_ID);
-  int32_t receivers[4];
-  const void* recorders[4];
-  for (uint32_t k = 0; k < 4; ++k) {
-    receivers[k] = f.node("aud.test.recorder");
-    recorders[k] = g_recorders.back();
-  }
-  f.commit([&] {
-    AUD_CHECK(aud_graph_connect_events(f.graph, AUD_GRAPH_NODE, 0, split, 0) ==
-              AUD_OK);
-    for (uint32_t k = 0; k < 4; ++k) {
-      AUD_CHECK(aud_graph_connect_events(f.graph, split, kChannels[k],
-                                         receivers[k], 0) == AUD_OK);
-    }
-  });
-  aud_graph_start(f.graph);
+  SplitFixture s;
   // Note ons and offs on MIDI channels 1, 2, 3 and 6 in the events of one
   // render request; the note of channel 6 is MIDI 2.0 in group 2, the first
   // note on is live.
@@ -158,25 +230,25 @@ AUD_TEST(channel_split_routes_each_channel_to_its_output) {
   in[3] = midi2Note(true, 63, kChannels[3], 58);
   in[7] = midi2Note(false, 63, kChannels[3], 148);
   in[0].flags = AUD_EVENT_FLAG_LIVE;
-  AUD_CHECK(f.render(256, nullptr, in, 8) == AUD_OK);
+  AUD_CHECK(s.f.render(256, nullptr, in, 8) == AUD_OK);
   AUD_CHECK(g_records.size() == 8);
   for (uint32_t k = 0; k < 4; ++k) {
-    AUD_CHECK(received(recorders[k], {in[k], in[4 + k]}));
+    AUD_CHECK(received(s.recorders[k], {in[k], in[4 + k]}));
   }
   // The receivers track the notes the split hands them like those of any
   // event route: a transport stop closes them, each on its own channel.
-  AUD_CHECK(f.request(AUD_TRANSPORT_REQUEST_START) == AUD_OK);
-  f.render(256);
+  AUD_CHECK(s.f.request(AUD_TRANSPORT_REQUEST_START) == AUD_OK);
+  s.f.render(256);
   AudEvent held[4];
   for (uint32_t k = 0; k < 3; ++k) held[k] = noteOn(70 + k, 100, 0, kChannels[k]);
   held[3] = midi2Note(true, 73, kChannels[3], 0);
-  AUD_CHECK(f.render(256, nullptr, held, 4) == AUD_OK);
+  AUD_CHECK(s.f.render(256, nullptr, held, 4) == AUD_OK);
   g_records.clear();
-  AUD_CHECK(f.request(AUD_TRANSPORT_REQUEST_STOP) == AUD_OK);
-  f.render(256);
+  AUD_CHECK(s.f.request(AUD_TRANSPORT_REQUEST_STOP) == AUD_OK);
+  s.f.render(256);
   AUD_CHECK(g_records.size() == 4);
   for (uint32_t k = 0; k < 4; ++k) {
-    const std::vector<Record> got = recordsOf(recorders[k]);
+    const std::vector<Record> got = recordsOf(s.recorders[k]);
     AUD_CHECK(got.size() == 1);
     if (got.size() != 1) continue;
     const Record& r = got[0];
@@ -235,6 +307,98 @@ AUD_TEST(channel_split_hands_other_events_to_output_0_only) {
   AUD_CHECK(received(recorders[0], {in[0], in[1], in[2], in[3], in[7]}));
   AUD_CHECK(received(recorders[1], {in[5]}));
   AUD_CHECK(received(recorders[2], {in[6]}));
+}
+
+AUD_TEST(channel_split_hands_a_full_block_to_two_receivers) {
+  Fixture f;
+  const int32_t split = f.node(AUD_GRAPH_CHANNEL_SPLIT_TYPE_ID);
+  const int32_t first = f.node("aud.test.recorder");
+  const int32_t second = f.node("aud.test.recorder");
+  f.commit([&] {
+    AUD_CHECK(aud_graph_connect_events(f.graph, AUD_GRAPH_NODE, 0, split, 0) ==
+              AUD_OK);
+    AUD_CHECK(aud_graph_connect_events(f.graph, split, 0, first, 0) == AUD_OK);
+    AUD_CHECK(aud_graph_connect_events(f.graph, split, 0, second, 0) == AUD_OK);
+  });
+  aud_graph_start(f.graph);
+  // A chase of the song position: a block's budget of controllers on MIDI
+  // channel 1 at one time leaves the scheduler in the second block, and
+  // the split hands each of them to both receivers - twice the budget
+  // that the nodes emit in one block.
+  const uint32_t count = 1024;  // the default of max_events_per_block
+  const AudTimestamp time = atSample(300);
+  std::vector<AudEvent> expected;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t word = ccWord(i % 120, i % 128);
+    const AudEvent event = aud_event_ump(&word, 1, 0, 0);
+    AUD_CHECK(aud_graph_send_event(f.graph, AUD_GRAPH_NODE, &event, &time,
+                                   0) == AUD_OK);
+    expected.push_back(at(event, 300 - 256));
+  }
+  f.render(256);
+  AUD_CHECK(g_records.empty());
+  f.render(256);
+  AUD_CHECK(received(g_recorders[0], expected));
+  AUD_CHECK(received(g_recorders[1], expected));
+  AUD_CHECK(f.stats().events_dropped == 0);
+  AUD_CHECK(f.countNotifications(AUD_NOTIFY_DIAGNOSTIC, AUD_ERROR_QUEUE_FULL) ==
+            0);
+}
+
+AUD_TEST(channel_split_leaves_the_closing_of_notes_to_the_nodes_behind_it) {
+  SplitFixture s;
+  // Two notes leave the graph on MIDI channel 16, then 70 notes on the
+  // channel of each receiver, 280 in all: more than the split's tracker
+  // holds - the 256 notes it closes when it goes -, fewer than each
+  // receiver does.
+  s.hold(30, 70, 2);
+  for (uint32_t k = 0; k < 4; ++k) {
+    AUD_CHECK(recordsOf(s.recorders[k]).size() == 70);
+  }
+  AUD_CHECK(s.f.stats().events_dropped == 0);
+  s.f.takeAll();
+  // A stop and a start: every receiver closes its own notes, one note off
+  // each, in the first block after the restart; the notes that left the
+  // graph close as well.
+  g_records.clear();
+  AUD_CHECK(aud_graph_stop(s.f.graph) == AUD_OK);
+  AUD_CHECK(aud_graph_start(s.f.graph) == AUD_OK);
+  s.f.render(256);
+  for (uint32_t k = 0; k < 4; ++k) {
+    AUD_CHECK(closedOnce(s.recorders[k], kChannels[k], 30, 70));
+  }
+  AUD_CHECK(s.externalNoteOffs() == 2);
+  // A prepare while suspended closes them the same way.
+  s.hold(40, 10, 1);
+  s.f.takeAll();
+  g_records.clear();
+  AUD_CHECK(aud_graph_suspend(s.f.graph) == AUD_OK);
+  AUD_CHECK(aud_graph_prepare(s.f.graph, kRate, 256) == AUD_OK);
+  AUD_CHECK(aud_graph_resume(s.f.graph) == AUD_OK);
+  s.f.render(256);
+  for (uint32_t k = 0; k < 4; ++k) {
+    AUD_CHECK(closedOnce(s.recorders[k], kChannels[k], 40, 10));
+  }
+  AUD_CHECK(s.externalNoteOffs() == 1);
+  // Nothing more follows.
+  g_records.clear();
+  s.f.render(256);
+  AUD_CHECK(g_records.empty() && s.externalNoteOffs() == 0);
+}
+
+AUD_TEST(channel_split_closes_the_notes_behind_it_when_it_is_removed) {
+  SplitFixture s;
+  s.hold(60, 3, 2);
+  s.f.takeAll();
+  g_records.clear();
+  // The split retires: it hands on the note offs of the notes it handed
+  // on, once each, while it fades out.
+  s.f.commit([&] { aud_graph_remove_node(s.f.graph, s.split); });
+  for (int i = 0; i < 4; ++i) s.f.render(256);
+  for (uint32_t k = 0; k < 4; ++k) {
+    AUD_CHECK(closedOnce(s.recorders[k], kChannels[k], 60, 3));
+  }
+  AUD_CHECK(s.externalNoteOffs() == 2);
 }
 
 AUD_TEST(channel_split_routes_a_document_of_the_headless_host) {

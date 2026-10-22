@@ -12,6 +12,12 @@
 
 - Native tests for render requests and documents of the headless host
 
+- Add room and one note off per note behind the channel split
+- Size the arena of emitted events like the block's event table, so a full block reaches every receiver behind the split
+- Treat the split as a router: the nodes behind it close their own notes on a stop or a prepare, once each; the split refuses no note on
+- Close the notes the split handed out of the graph on a restart, and those it handed on when it is removed
+- Document the remaining limit of the arena in the header, README.md and README.de.md; regenerate the bindings
+- Tell the split callbacks apart at 10.6 ms in the timing test, so a slow render under tsan does not fail it
 
 ### Changed
 
