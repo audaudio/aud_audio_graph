@@ -13,6 +13,9 @@
 #define AUD_SEMAPHORE_HPP
 
 #if _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #elif __APPLE__
 #include <dispatch/dispatch.h>

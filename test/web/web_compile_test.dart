@@ -19,7 +19,7 @@ void main() {
           '-o',
           '${out.path}/main.js',
           'test/fixtures/web/main.dart',
-        ]);
+        ], runInShell: Platform.isWindows);
         expect(result.exitCode, 0, reason: '${result.stdout}${result.stderr}');
       } finally {
         await out.delete(recursive: true);

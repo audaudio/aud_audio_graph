@@ -13,10 +13,12 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <ctime>
 #include <functional>
+#include <thread>
 #include <vector>
 
 #include "aud_audio_graph.h"
@@ -799,8 +801,7 @@ AUD_TEST(wakes_the_listener_once_per_batch) {
   aud_graph_start(f.graph);
   for (int i = 0; i < 5; ++i) f.render(256);
   for (int i = 0; i < 100 && wakes == 0; ++i) {
-    struct timespec ts {0, 1000000};
-    nanosleep(&ts, nullptr);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   AUD_CHECK(wakes == 1);
   AUD_CHECK(f.take().size() >= 2);

@@ -161,7 +161,17 @@ AUD_TEST(parks_a_node_for_its_state_calls) {
     }
   };
   std::vector<AudGraphNotification> notifications;
-  for (int i = 0; i < 40; ++i) {
+  // Whether a block of the stream met a parked node yet: a loaded machine,
+  // Windows above all with its time slices of 15.6 ms, may keep the stream
+  // off the processor during all 40 rounds of 200 us; then more rounds run,
+  // 400 at most (ticket 38).
+  const auto anyPostponed = [&] {
+    for (const AudGraphNotification& n : notifications) {
+      if (n.type == AUD_NOTIFY_DIAGNOSTIC && n.code == AUD_ERROR_STATE) return true;
+    }
+    return false;
+  };
+  for (int i = 0; i < 40 || (i < 400 && !anyPostponed()); ++i) {
     AUD_CHECK(aud_graph_node_save_state(f.graph, preset, blob, 16, &size) == AUD_OK);
     AUD_CHECK(aud_graph_node_load_state(f.graph, preset, blob, 4, kPresetStateVersion) == AUD_OK);
     for (int k = 0; k < 10; ++k) {

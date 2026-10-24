@@ -60,7 +60,7 @@ inline void fail(const char* expression, const char* file, int line) {
               expression);
 }
 
-inline bool near(double a, double b, double tolerance, const char* file,
+inline bool isNear(double a, double b, double tolerance, const char* file,
                  int line) {
   if (std::fabs(a - b) <= tolerance) return true;
   std::printf("  %s:%d: %.9g is not within %g of %.9g\n", file, line, a,
@@ -113,6 +113,6 @@ inline int run() {
   } while (0)
 
 #define AUD_CHECK_NEAR(a, b, tolerance) \
-  AUD_CHECK(aud_test::near((a), (b), (tolerance), __FILE__, __LINE__))
+  AUD_CHECK(aud_test::isNear((a), (b), (tolerance), __FILE__, __LINE__))
 
 #endif  // AUD_TEST_HPP
