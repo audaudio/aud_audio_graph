@@ -9,4 +9,4 @@
 // coverage:ignore-file
 
 /// The version of the `aud_audio_graph` package.
-const String audAudioGraphVersion = '0.5.4';
+const String audAudioGraphVersion = '0.5.5';
