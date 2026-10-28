@@ -36,16 +36,19 @@ packages:
   aud_audio_core:
     dependency: "direct main"
     description:
-      path: "../aud_audio_core"
-      relative: true
-    source: path
-    version: "0.6.0"
+      path: "."
+      resolved-ref: e5be8491576647870c49e53786d33c3ebf10dba9
+      tag-pattern: "{{version}}"
+      url: "git@github.com:audaudio/aud_audio_core.git"
+    source: git
+    version: "0.6.1"
   aud_midi_standard:
     dependency: "direct dev"
     description:
-      path: "../aud_midi_standard"
-      relative: true
-    source: path
+      name: aud_midi_standard
+      sha256: "92559c6e1534b892f1029a3bb6c08a07f2e96cda1d0dcca227271d3e9353306c"
+      url: "https://pub.dev"
+    source: hosted
     version: "0.3.0"
   boolean_selector:
     dependency: transitive
@@ -139,10 +142,10 @@ packages:
     dependency: transitive
     description:
       name: cupertino_icons
-      sha256: "41e005c33bd814be4d3096aff55b1908d419fde52ca656c8c47719ec745873cd"
+      sha256: b7cc2390aac296c083bea762859413eb1cf5b630c70e0c7e4d831018f762a8b2
       url: "https://pub.dev"
     source: hosted
-    version: "1.0.9"
+    version: "2.0.0"
   dart_style:
     dependency: transitive
     description:
