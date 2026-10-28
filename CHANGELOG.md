@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.1 - 2026-10-28
+
+### Changed
+
+- Resolve the example together with the package
+
+- Add the example to a pub workspace, resolution: workspace in the example
+
+- Drop the lock file of the example, the package lock covers it
+
+- Move the dependency overrides of the example to the workspace root
+
+- Keep test within the test_api that flutter_test pins
+
 ## 0.6.0 - 2026-10-28
 
 ### Changed
