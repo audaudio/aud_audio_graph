@@ -21,7 +21,7 @@ dependencies:
   native_toolchain_c: ^0.19.5
 
 dev_dependencies:
-  aud_midi_standard: ^0.1.1
+  aud_midi_standard: ^0.2.0
   dna_audanika: ^0.1.0
   ffigen: ^23.0.0
   flutter_lints: ^6.0.0
