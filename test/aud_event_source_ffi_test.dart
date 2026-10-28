@@ -260,9 +260,8 @@ void main() {
         timing: AudSourceTiming.immediate,
       );
       expect(source.push([noteOn(60)], hostTimeNs: atFrame(999.5)), isTrue);
-      AudOfflineRenderer(
-        graph,
-      ).render(frames: 512, blockFrames: 256, startHostTimeNs: 1000000000);
+      AudOfflineRenderer(graph)
+          .render(frames: 512, blockFrames: 256, startHostTimeNs: 1000000000);
       final records = DartRecorderNode.records;
       expect(records, hasLength(1));
       expect(records[0].position, 0);

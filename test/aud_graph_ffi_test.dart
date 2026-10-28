@@ -43,9 +43,9 @@ void main() {
     return count;
   }
 
-  AudEvent noteOn(int note) => AudUmpEvent.fromMessage(
-    MidiNoteOn(channel: 0, note: note, velocity: 100),
-  ).single;
+  AudEvent noteOn(int note) =>
+      AudUmpEvent.fromMessage(MidiNoteOn(channel: 0, note: note, velocity: 100))
+          .single;
 
   group('AudGraph', () {
     test('is created with its format and its node types', () {
