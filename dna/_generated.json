@@ -13,15 +13,15 @@
       "name": "dna-readme",
       "package": "dna_readme",
       "ecosystem": "pub",
-      "resolvedVersion": "0.1.2",
+      "resolvedVersion": "0.3.1",
       "via": "dna-audanika",
-      "hash": "0xb8eeee4e2937ca0d"
+      "hash": "0x6678ec2e509f3dd9"
     },
     {
       "name": "dna-guides",
       "package": "dna_guides",
       "ecosystem": "pub",
-      "resolvedVersion": "0.1.2",
+      "resolvedVersion": "0.2.0",
       "via": "dna-audanika",
       "hash": "0x3bd4be7c009270a6"
     },
@@ -29,15 +29,31 @@
       "name": "dna-index",
       "package": "dna_index",
       "ecosystem": "pub",
-      "resolvedVersion": "0.1.3",
+      "resolvedVersion": "0.2.0",
       "via": "dna-audanika",
       "hash": "0x1d92b0add37a1ac7"
+    },
+    {
+      "name": "dna-blog",
+      "package": "dna_blog",
+      "ecosystem": "pub",
+      "resolvedVersion": "0.3.0",
+      "via": "dna-audanika",
+      "hash": "0x49bf0909e92d37bb"
+    },
+    {
+      "name": "dna-translate",
+      "package": "dna_translate",
+      "ecosystem": "pub",
+      "resolvedVersion": "0.3.0",
+      "via": "dna-audanika",
+      "hash": "0xfec6f71367d12db6"
     },
     {
       "name": "dna-install",
       "package": "dna_install",
       "ecosystem": "pub",
-      "resolvedVersion": "0.1.3",
+      "resolvedVersion": "0.2.0",
       "via": "dna-audanika",
       "hash": "0xbe88eb4256745ee1"
     },
@@ -45,41 +61,41 @@
       "name": "dna-vscode",
       "package": "dna_vscode",
       "ecosystem": "pub",
-      "resolvedVersion": "0.2.4",
+      "resolvedVersion": "0.4.0",
       "via": "dna-audanika",
-      "hash": "0x9a76a39efcd34360"
+      "hash": "0xb1b916118eb63333"
     },
     {
       "name": "dna-clean-code",
       "package": "dna_clean_code",
       "ecosystem": "pub",
-      "resolvedVersion": "0.1.2",
+      "resolvedVersion": "0.3.0",
       "via": "dna-audanika",
-      "hash": "0xacaa785dad36b047"
+      "hash": "0xea7897d52aebb9b6"
     },
     {
       "name": "dna-github",
       "package": "dna_github",
       "ecosystem": "pub",
-      "resolvedVersion": "0.0.3",
+      "resolvedVersion": "0.1.1",
       "via": "dna-gg",
-      "hash": "0xae24c13573219f91"
+      "hash": "0xf541b93b3dc7995d"
     },
     {
       "name": "dna-gg",
       "package": "dna_gg",
       "ecosystem": "pub",
-      "resolvedVersion": "0.7.1",
+      "resolvedVersion": "1.1.0",
       "via": "dna-audanika",
-      "hash": "0xc0e2cebcfa39b9d7"
+      "hash": "0x8654064a14538e39"
     },
     {
       "name": "dna-audanika",
       "package": "dna_audanika",
       "ecosystem": "pub",
-      "resolvedVersion": "0.0.2",
+      "resolvedVersion": "0.1.0",
       "via": null,
-      "hash": "0xe1140f9ec75aba0a"
+      "hash": "0x6fd1011d913f0969"
     },
     {
       "name": "self",
@@ -87,7 +103,7 @@
       "ecosystem": null,
       "resolvedVersion": null,
       "via": null,
-      "hash": "0x00000000811c9dc5"
+      "hash": "0x107eff1dc17f9c99"
     }
   ],
   "claude": {
@@ -98,8 +114,24 @@
   "baseHash": "0x6883da335b415f9d",
   "instances": [
     {
+      "path": ".claude/hooks/pm-prompts.json",
+      "hash": "0x988e344de6ee6200"
+    },
+    {
+      "path": ".claude/hooks/pm-prompts.mjs",
+      "hash": "0x988aed96a8073727"
+    },
+    {
+      "path": ".claude/settings.json",
+      "hash": "0x6c6b768c3e99e867"
+    },
+    {
+      "path": ".claude/skills/blog/SKILL.md",
+      "hash": "0x0406dd0fa1bde2a1"
+    },
+    {
       "path": ".claude/skills/code/SKILL.md",
-      "hash": "0xecdcaf68a545dbc6"
+      "hash": "0x04500a386a134a67"
     },
     {
       "path": ".claude/skills/gg-cleanup/SKILL.md",
@@ -107,23 +139,27 @@
     },
     {
       "path": ".claude/skills/gg-commit/SKILL.md",
-      "hash": "0xdb7a268397facfc4"
+      "hash": "0x7fbe4b075588fc4d"
     },
     {
       "path": ".claude/skills/gg-publish/SKILL.md",
-      "hash": "0x61626e5e2425d9ab"
+      "hash": "0xcdef2684fcaaac5a"
     },
     {
       "path": ".claude/skills/gg-push/SKILL.md",
       "hash": "0x140e1b8d6cbe222e"
     },
     {
+      "path": ".claude/skills/gg-review/SKILL.md",
+      "hash": "0x9f7bbbe511238684"
+    },
+    {
       "path": ".claude/skills/gg-ticket/SKILL.md",
-      "hash": "0xc33e2869f8752c00"
+      "hash": "0xbfbb8b9fd485f87c"
     },
     {
       "path": ".claude/skills/gg/SKILL.md",
-      "hash": "0x0e643054f49cf6a2"
+      "hash": "0x1eb3897cb31ec13b"
     },
     {
       "path": ".claude/skills/guide/SKILL.md",
@@ -139,7 +175,7 @@
     },
     {
       "path": ".claude/skills/readme/SKILL.md",
-      "hash": "0xa9725f18d22165c9"
+      "hash": "0x89f5e11eaa7db772"
     },
     {
       "path": ".claude/skills/review-heavy/SKILL.md",
@@ -151,7 +187,11 @@
     },
     {
       "path": ".claude/skills/test/SKILL.md",
-      "hash": "0x79f650ffb2e49281"
+      "hash": "0x46d82c5f692cc687"
+    },
+    {
+      "path": ".claude/skills/translate/SKILL.md",
+      "hash": "0x757442d517dd8156"
     },
     {
       "path": ".claude/skills/vscode/SKILL.md",
@@ -182,20 +222,24 @@
       "hash": "0xeadf5bdb5784b340"
     },
     {
+      "path": "doc/guides/blog-guide.md",
+      "hash": "0xa1c0d64e4f51eecd"
+    },
+    {
       "path": "doc/guides/code-guide-dart.md",
-      "hash": "0xd7e8b1357f4022d7"
+      "hash": "0xd5b0a77bb8e6b12b"
     },
     {
       "path": "doc/guides/code-guide-typescript.md",
-      "hash": "0x5e176f50b784b966"
+      "hash": "0xc3849f2ed6343446"
     },
     {
       "path": "doc/guides/code-guide.md",
-      "hash": "0xcfa188a4bc5e898d"
+      "hash": "0xb9b76e5b91e1370e"
     },
     {
       "path": "doc/guides/develop-guide.md",
-      "hash": "0x05b3cae2e06ca209"
+      "hash": "0x98a216708902452f"
     },
     {
       "path": "doc/guides/develop-without-ai-guide.md",
@@ -211,11 +255,11 @@
     },
     {
       "path": "doc/guides/for-ai/ai-dev-guide.md",
-      "hash": "0x2d7fd420480da30e"
+      "hash": "0x6693e485bf82dd23"
     },
     {
       "path": "doc/guides/for-ai/ai-review-guide.md",
-      "hash": "0x44a84203f02726a7"
+      "hash": "0xb09472a6ec86c67f"
     },
     {
       "path": "doc/guides/for-ai/review-heavy-guide.md",
@@ -255,7 +299,7 @@
     },
     {
       "path": "doc/guides/install-guide/install-gg-workspace-guide.md",
-      "hash": "0x38895338e94c64a6"
+      "hash": "0x417781fc59018b96"
     },
     {
       "path": "doc/guides/install-guide/install-github-cli-guide.md",
@@ -275,27 +319,43 @@
     },
     {
       "path": "doc/guides/readme-dna-guide.md",
-      "hash": "0x971dc1dd09c57b5e"
+      "hash": "0xcdaf677256e13765"
     },
     {
       "path": "doc/guides/readme-guide.md",
-      "hash": "0xba34c766bfb9fe37"
+      "hash": "0xace34e342bd4b054"
+    },
+    {
+      "path": "doc/guides/setup-github-guide.md",
+      "hash": "0x836d4ca942a58b9c"
     },
     {
       "path": "doc/guides/test-guide-dart.md",
-      "hash": "0xdd2acd571b5acdf3"
+      "hash": "0xd9d8c4939029065d"
     },
     {
       "path": "doc/guides/test-guide-typescript.md",
-      "hash": "0xbaf40286ed008b42"
+      "hash": "0x3b6fa347faeefd54"
     },
     {
       "path": "doc/guides/test-guide.md",
-      "hash": "0x893535e969b38bb0"
+      "hash": "0x89b778267e35ad67"
+    },
+    {
+      "path": "doc/guides/translate-guide.md",
+      "hash": "0x6b1c0c15d36790c9"
     },
     {
       "path": "doc/guides/vscode-guide.md",
       "hash": "0x93b9344290ecc83b"
+    },
+    {
+      "path": "doc/templates/blog-template-de.md",
+      "hash": "0xcf9a1c7dd9338ed7"
+    },
+    {
+      "path": "doc/templates/blog-template.md",
+      "hash": "0xd188789df19cc2bc"
     },
     {
       "path": "doc/templates/index-template.jsonc",
@@ -303,15 +363,15 @@
     },
     {
       "path": "doc/templates/readme-dna-template.md",
-      "hash": "0xbe6a2e367628df89"
+      "hash": "0x02a9e60931cb8aef"
     },
     {
       "path": "doc/templates/readme-template.md",
-      "hash": "0x0d16a11001dc2f0c"
+      "hash": "0xe9e2d3daf594bb0b"
     },
     {
-      "path": "guides/setup-github-guide.md",
-      "hash": "0x8681f11bbfaa0c00"
+      "path": "scripts/check-readme.js",
+      "hash": "0x828bbb3bf063a7c3"
     },
     {
       "path": "scripts/setup-github-repo.js",
