@@ -1,0 +1,16 @@
+{
+  // The audaudio identity. Everything else is inherited from the topic
+  // layers, which default to the ggsuite values — without these the
+  // instances would carry ggsuite's name into every audaudio repo.
+  "dnaCompany": "Audanika",
+  "dnaCopyrightHolder": "Audanika. All Rights Reserved.",
+  "dnaGitOrg": "audaudio",
+  "dnaJiraPrefix": "AUD",
+
+  // Spelled out instead of inheriting "https://github.com/dnaGitOrg":
+  // a reference renders the value in the casing of the reference.
+  "dnaGitOrgUrl": "https://github.com/audaudio",
+
+  // The job name of the quick check workflow the GitHub ruleset requires.
+  "dnaGitQuickCheckPipelineName": "Quick Check"
+}

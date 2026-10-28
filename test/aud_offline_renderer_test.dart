@@ -139,9 +139,8 @@ void main() {
         rampFrames: 480,
         at: const AudTimestamp.sample(2400),
       );
-      final wav = AudOfflineRenderer(
-        graph,
-      ).renderWav(frames: 4800, blockSizes: const [256, 100, 37]);
+      final wav = AudOfflineRenderer(graph)
+          .renderWav(frames: 4800, blockSizes: const [256, 100, 37]);
       final file = File('test/goldens/oscillator_filter.wav');
       if (Platform.environment['UPDATE_GOLDENS'] == '1') {
         file.parent.createSync(recursive: true);

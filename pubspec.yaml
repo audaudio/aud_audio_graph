@@ -6,7 +6,7 @@ homepage: https://github.com/audaudio/aud_audio_graph
 repository: https://github.com/audaudio/aud_audio_graph
 
 environment:
-  sdk: ^3.12.2
+  sdk: ^3.13.0
 
 dependencies:
   ffi: ^2.2.0
@@ -22,8 +22,8 @@ dependencies:
 
 dev_dependencies:
   aud_midi_standard: ^0.1.1
-  dna_audanika: ^0.0.2
+  dna_audanika: ^0.1.0
   ffigen: ^23.0.0
   flutter_lints: ^6.0.0
-  helix: ^1.13.0
+  helix: ^1.14.0
   test: ^1.33.0

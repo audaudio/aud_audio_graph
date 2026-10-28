@@ -1,10 +1,122 @@
 # aud_audio_graph
 
-Audio graph engine of the Audanika Audio Engine: C++ render programs with persistent node instances, transactions, realtime queues, scheduler, transport, offline renderer, headless host; Dart graph API and graph document.
+English | [Deutsch](README.de.md)
 
-Part of the Audanika Audio Engine; planned in [aud_audio_pm](https://github.com/audaudio/aud_audio_pm).
+[![CI](https://github.com/audaudio/aud_audio_graph/actions/workflows/quick_check.yaml/badge.svg)](https://github.com/audaudio/aud_audio_graph/actions/workflows/quick_check.yaml)
 
-## What the package holds (ABI 0.4, tickets 19 and 25)
+Audio graph engine of the Audanika Audio Engine: C++ render programs, scheduler, transport, headless host; Dart graph API.
+
+Part of the Audanika Audio Engine; planned in
+[aud_audio_pm](https://github.com/audaudio/aud_audio_pm).
+
+## Motivation
+
+- The packages of the Audanika Audio Engine need one engine that renders a
+  graph of nodes on the realtime thread, built on the contracts of
+  `aud_audio_core` (step S2 of the plan): the ABI, the node vtable, the
+  timing contract and the OSC message model.
+- An app edits the graph while it plays. The engine takes those edits in
+  transactions and lets the realtime thread adopt the compiled program at
+  a block start, with fades and tails instead of clicks.
+- The audio thread must never allocate, block or drop what it was
+  promised. Queues with fixed capacities refuse instead of dropping, and
+  a debug watchdog and the sanitizers of the native tests prove it.
+- Plugin shells and offline tools run graphs without Dart: the headless
+  host loads a graph document, applies its presets and renders it through
+  the same C API.
+
+## Installation
+
+The package is not published to pub.dev. Add it as a git dependency,
+resolved by its version tag:
+
+```yaml
+dependencies:
+  aud_audio_graph:
+    git:
+      url: git@github.com:audaudio/aud_audio_graph.git
+      tag_pattern: "{{version}}"
+    version: ^0.5.5
+```
+
+## Usage
+
+Render the reference chain oscillator → filter → gain → output offline,
+as the app in `example/` does:
+
+```dart
+import 'package:aud_audio_graph/aud_audio_graph_ffi.dart';
+
+void main() {
+  final graph = AudGraphFfi(maxFrames: 256, outputChannels: const [1]);
+  final osc = graph.createNode('aud.graph.oscillator', name: 'osc');
+  final filter = graph.createNode(
+    'aud.graph.filter',
+    name: 'filter',
+    inputChannels: const [1],
+    outputChannels: const [1],
+  );
+  final gain = graph.createNode(
+    'aud.core.gain',
+    name: 'gain',
+    inputChannels: const [1],
+    outputChannels: const [1],
+  );
+  graph.setParam(filter, 'cutoff', 500);
+  graph.setParam(gain, 'gain', 0.8);
+  graph.transaction((tx) {
+    tx.connect(osc, filter);
+    tx.connect(filter, gain);
+    tx.connect(gain, graph.io);
+  });
+  graph.start();
+  final output = AudOfflineRenderer(graph).render(frames: 4800);
+  graph.stop();
+  final peak = output.single.single
+      .map((v) => v.abs())
+      .reduce((a, b) => a > b ? a : b);
+  print('Peak of the rendered chain: ${peak.toStringAsFixed(3)}');
+  graph.dispose();
+}
+```
+
+It prints:
+
+```text
+Peak of the rendered chain: 0.291
+```
+
+The example app also lists the node types of the graph with their
+parameters.
+
+## Limitations
+
+- The engine implements ABI 0.4 of `aud_audio_core`; in major 0 the
+  minors of engine and nodes must match exactly.
+- `aud_audio_graph.dart` compiles for the web, but only as the interface
+  `AudGraph`; the engine itself runs on native platforms through
+  `aud_audio_graph_ffi.dart`.
+- Event sources take external MIDI today; OSC and Link producers come
+  later.
+- The limits of a graph: at most 64 event sources
+  (`AUD_GRAPH_MAX_EVENT_SOURCES`); messages to nodes of at most 16
+  arguments and 1000 bytes; a scheduler lookahead of 10 s; a tail of at
+  most 10 s for removed nodes; note trackers of 256 notes per node; an
+  arena of 3 × `max_events_per_block` + 768 entries for the events the
+  nodes emit in a block - beyond it they are dropped and counted.
+- Offline renders are not recorded in the render load.
+
+## Documentation
+
+- [The C API](src/aud_audio_graph.h) in `src/aud_audio_graph.h`
+- [The JSON schema of the graph document](doc/schemas/aud_graph_document.schema.json)
+- [The blog of this repo](doc/blog)
+- [The plan of the Audanika Audio Engine](https://github.com/audaudio/aud_audio_pm)
+  in `aud_audio_pm`
+
+## How it works
+
+### What the package holds (ABI 0.4, tickets 19 and 25)
 
 The engine behind `src/aud_audio_graph.h`, built on the contracts of
 `aud_audio_core` (step S2 of the plan):
@@ -54,7 +166,7 @@ The engine behind `src/aud_audio_graph.h`, built on the contracts of
   one entry per connection it leaves on, beyond the arena it is dropped
   and counted.
 
-## The resources of the process (ticket 25)
+### The resources of the process (ticket 25)
 
 The graphs of a process share what the packages need for their assets
 (lifecycle-002), through the host api of ABI 0.4:
@@ -95,7 +207,7 @@ The graphs of a process share what the packages need for their assets
 - The engine reads the tail of a node at every commit, so that a tail may
   follow what the node loaded.
 
-## Event sources (ticket 26)
+### Event sources (ticket 26)
 
 External MIDI - and later OSC and Link - reaches the audio thread through
 event sources (interop-003, midi-003): a lock-free queue of UMP packets
@@ -152,7 +264,7 @@ scheduler and before the host's events.
   counts a bin with a relaxed add, the histogram is read after the
   snapshot of the other fields.
 
-## The render load (ticket 29)
+### The render load (ticket 29)
 
 How much of its block the audio thread spends, for a load governor that
 keeps the voices below what the device renders in time:
@@ -181,7 +293,7 @@ keeps the voices below what the device renders in time:
 - `aud_graph_reset_stats` leaves the gauge alone, so tests and tools can
   reset the counters while a governor reads it.
 
-## The headless host (ticket 20)
+### The headless host (ticket 20)
 
 The C API `aud_host_*` runs a graph without Dart, as the plugin shells do
 (plugin-002):
@@ -226,7 +338,7 @@ graph.loadState(gainNode, blob);
 print(graph.outputTail);                                // AudGraph.infiniteTail if endless
 ```
 
-## The realtime contract under test
+### The realtime contract under test
 
 The native tests in `test/native` run under the address and undefined
 behaviour sanitizers, under Clang's RealtimeSanitizer when a compiler on
@@ -247,7 +359,7 @@ hooks:
       watchdog: true
 ```
 
-## Dart API
+### Dart API
 
 `aud_audio_graph.dart` is platform-neutral and compiles for the web
 (web-001): `AudGraph` is an interface whose factory creates an
@@ -322,7 +434,16 @@ register their node types with `graph.hostApi`; an `aud_audio_io` stream
 calls `aud_graph_render` with `graph.pointer` as the user pointer, as
 `AudEngine` of `aud_audio` does.
 
-## Tests
+## Status
+
+Version 0.5.5, before 1.0 — the API may change between minor versions.
+The engine implements ABI 0.4 of `aud_audio_core`.
+
+## Contributing
+
+Follow the [develop guide](doc/guides/develop-guide.md), the
+[Dart code guide](doc/guides/code-guide-dart.md) and the
+[Dart test guide](doc/guides/test-guide-dart.md).
 
 `dart test` covers the Dart side and runs `scripts/test-native.js`, which
 builds and runs the native tests of `test/native` under every sanitizer
@@ -332,3 +453,7 @@ the machine has (`--no-sanitize`, `--no-rtsan`, `--no-tsan` and
 
 The C API is in `src/aud_audio_graph.h`; regenerate the bindings with
 `dart run ffigen --config ffigen.yaml`.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

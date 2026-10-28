@@ -126,12 +126,10 @@ void main() {
       expect((osc as AudDiagnostic).address, isNotNull);
       expect(
         (const AudDiagnosticNotification(
-                  code: AUD_ERROR_LATE,
-                  count: 3,
-                  samplePosition: 0,
-                ).toOsc(1)
-                as AudDiagnostic)
-            .address,
+          code: AUD_ERROR_LATE,
+          count: 3,
+          samplePosition: 0,
+        ).toOsc(1) as AudDiagnostic).address,
         isNull,
       );
     });
