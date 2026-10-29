@@ -8,7 +8,7 @@
 PRODUCT_NAME = aud_audio_graph_example
 
 // The application's bundle identifier
-PRODUCT_BUNDLE_IDENTIFIER = com.audanika.audAudioGraph
+PRODUCT_BUNDLE_IDENTIFIER = com.example.audAudioGraph
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2026 com.audanika. All rights reserved.
+PRODUCT_COPYRIGHT = Copyright © 2026 com.example. All rights reserved.
