@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.2 - 2026-10-29
 
 ### Added
 
@@ -28,7 +28,6 @@
 
 - Keep test within the test_api that flutter_test pins
 
-
 ## 0.6.0 - 2026-10-28
 
 ### Changed
@@ -52,7 +51,6 @@
 - Upgrade aud_midi_standard to 0.2.0
 
 - Lift the lock file to the newest resolvable versions
-
 
 ## 0.5.5 - 2026-10-24
 
@@ -143,7 +141,6 @@
 
 - The README examples compile; the p99 of 47 voices on the Galaxy Tab S4 is 1.29
 
-
 ## 0.5.1 - 2026-10-12
 
 ### Added
@@ -193,7 +190,6 @@
 - The capacity of a source is at most 2^20; the Dart example attaches, detaches, sets latencyNs and lists graph.eventSources
 
 - Statics after the public getters; the stress tests carry their numbers in AUD_CHECK_MSG instead of printing them
-
 
 ## 0.5.0 - 2026-10-12
 
@@ -263,7 +259,6 @@
 
 - The error tests check the type and the message; AudCacheUsage and AudNodeMessage get their landmarks
 
-
 ## 0.4.0 - 2026-10-09
 
 ### Changed
@@ -298,7 +293,6 @@
 - Refuse descriptors without parameter or string ids
 
 - Add AudHost and the asset table of the graph document on the Dart side
-
 
 ## 0.2.0 - 2026-10-08
 
