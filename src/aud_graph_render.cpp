@@ -19,11 +19,16 @@
 
 #include "aud_clock.h"
 #include "aud_graph_internal.hpp"
+#include "aud_graph_test_clock.hpp"
 #include "aud_graph_watchdog.hpp"
 #include "aud_transport.h"
 #include "aud_ump.h"
 
 namespace aud {
+
+#if AUD_GRAPH_TEST_CLOCK
+std::atomic<TestClock> g_testClock{nullptr};
+#endif
 
 constexpr uint32_t kGraphTarget = UINT32_MAX;
 
@@ -531,7 +536,7 @@ void computeStreamTime(AudGraph* graph, const AudRenderRequest* request) {
   if (time.host_time_source == AUD_TIME_SOURCE_NONE) {
     if (!graph->synthesizedValid) {
       graph->synthesizedOrigin =
-          aud_clock_now_ns() -
+          renderNowNs() -
           static_cast<int64_t>(std::llround(
               static_cast<double>(time.sample_position) * nsPerSample(graph)));
       graph->synthesizedValid = true;
@@ -2376,7 +2381,7 @@ int32_t renderBlock(AudGraph* graph,
     clearOutputs(request);
     return AUD_ERROR_INVALID_ARGUMENT;
   }
-  const int64_t start = aud_clock_now_ns();
+  const int64_t start = renderNowNs();
   const uint32_t frames = request->frames;
   resetScratch(graph);
   computeStreamTime(graph, request);
@@ -2433,7 +2438,7 @@ int32_t renderBlock(AudGraph* graph,
   if (graph->hostRequest != nullptr) sortOutputEvents(graph->hostRequest);
   reportDiagnostics(graph);
   reportWatchdog(graph);
-  const int64_t elapsed = aud_clock_now_ns() - start;
+  const int64_t elapsed = renderNowNs() - start;
   graph->renderSum.fetch_add(elapsed, std::memory_order_relaxed);
   if (elapsed > graph->renderMax.load(std::memory_order_relaxed)) {
     graph->renderMax.store(elapsed, std::memory_order_relaxed);
