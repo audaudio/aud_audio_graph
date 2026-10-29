@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.2 - 2026-10-29
+
+### Added
+
+- Add a blog post about the rename
+
+### Changed
+
+- Update a renamed consumer in docs and index
+
+### Fixed
+
+- Fix the blog post about the rename
+
 ## 0.6.1 - 2026-10-28
 
 ### Changed

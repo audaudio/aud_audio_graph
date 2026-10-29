@@ -18,7 +18,7 @@ import 'aud_graph_node.dart';
 // #############################################################################
 /// An [AudEventSource] of the native engine: its [address] and the
 /// addresses of the push, release and size functions let a native
-/// producer - the tap adapters of `aud_audio_midi` - feed it without Dart.
+/// producer - the tap adapters of `aud_audio_with_midi` - feed it without Dart.
 final class AudEventSourceFfi implements AudEventSource {
   /// Wraps the native source [pointer] of [graph]; `AudGraphFfi`'s
   /// `createEventSource` creates one.

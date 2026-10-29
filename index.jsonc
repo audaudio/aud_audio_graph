@@ -28,7 +28,7 @@
     "usedBy": {
       "aud_audio_web": "consumes this package",
       "aud_audio": "consumes this package",
-      "aud_audio_midi": "consumes this package",
+      "aud_audio_with_midi": "consumes this package",
       "aud_audio_osc": "consumes this package",
       "aud_audio_sequencer": "consumes this package",
       "aud_audio_link": "consumes this package",
