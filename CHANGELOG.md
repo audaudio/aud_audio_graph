@@ -5,6 +5,7 @@
 ### Changed
 
 - Make the timing histogram test independent of sleeps
+- Document the replaceable render clock of the tests
 
 ## 0.6.3 - 2026-10-29
 

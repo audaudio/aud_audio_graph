@@ -365,7 +365,10 @@ beweist, dass der Lauf eine Allokation im Audio-Thread fängt), und unter
 dem Thread-Sanitizer. Stresstests prüfen Queue-Überlauf, späte Events,
 eine Transaktion vor jedem Block mit Klick-Detektor, Routenwechsel bei
 klingenden Noten, vollen Scheduler und Note-Tracker und einen Stream, der
-auf eigenem Thread rendert. Der Debug-Watchdog zählt Allokationen, Frees
+auf eigenem Thread rendert. Ein Test, der exakte Abstände zwischen Renders
+braucht, stellt die Render-Uhr selbst (`AUD_GRAPH_TEST_CLOCK`, nur in den
+nativen Tests an), so dass weder ein Sanitizer noch eine ausgelastete
+Maschine verschiebt, was er misst. Der Debug-Watchdog zählt Allokationen, Frees
 und Log-Aufrufe im Audio-Thread - in einer App die der eigenen Bibliothek
 des Graphen und jeden Aufruf der Host-API; `AudGraphFfi.watchdogEnabled`
 und `watchdogViolations` lesen ihn. Er ist in den nativen Tests

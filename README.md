@@ -347,7 +347,9 @@ catches an allocation on the audio thread) and under the thread
 sanitizer. Stress tests cover queue overflow, late events, a transaction
 in front of every block with a click detector, route changes while notes
 play, a full scheduler and note tracker, and a stream rendering on its own
-thread. The debug watchdog counts allocations, frees and log calls on the
+thread. A test that needs exact gaps between renders sets the render clock
+itself (`AUD_GRAPH_TEST_CLOCK`, on in the native tests only), so neither a
+sanitizer nor a loaded machine moves what it measures. The debug watchdog counts allocations, frees and log calls on the
 audio thread - in an app those of the graph's own library and every call of
 the host api; `AudGraphFfi.watchdogEnabled` and `watchdogViolations`
 read it. It is on in the native tests and in an app that sets
