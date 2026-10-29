@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Add a blog post about the rename
+
 ### Changed
 
 - Update a renamed consumer in docs and index
