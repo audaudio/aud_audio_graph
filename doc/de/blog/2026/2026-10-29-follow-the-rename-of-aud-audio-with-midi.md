@@ -22,8 +22,7 @@ found in the LICENSE file in the root of this package.
 ## Umsetzung
 
 - `index.jsonc`: `interfaces.usedBy` nennt `aud_audio_with_midi`.
-- Doc-Kommentare und, wo sie das Paket verlinken, die READMEs nutzen den
-  neuen Namen und die neue GitHub-URL.
+- Der Doc-Kommentar der Event-Source-FFI nutzt den neuen Namen.
 
 ## Ergebnis
 

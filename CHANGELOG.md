@@ -10,6 +10,10 @@
 
 - Update a renamed consumer in docs and index
 
+### Fixed
+
+- Fix the blog post about the rename
+
 ## 0.6.1 - 2026-10-28
 
 ### Changed
