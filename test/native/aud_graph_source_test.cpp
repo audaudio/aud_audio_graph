@@ -18,15 +18,6 @@
 #include <thread>
 #include <vector>
 
-#if _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#include <timeapi.h>
-#pragma comment(lib, "winmm.lib")
-#endif
-
 #include "aud_audio_graph.h"
 #include "aud_graph_fixture.hpp"
 #include "aud_graph_test_clock.hpp"
@@ -80,23 +71,6 @@ int64_t periodPercentileNs(const AudGraphTiming& t, double fraction) {
     }
   }
   return static_cast<int64_t>(AUD_GRAPH_PERIOD_BINS + 1) * AUD_GRAPH_PERIOD_BIN_NS;
-}
-
-// Renders `count` blocks of 256 frames, one every `periodNs` from `from`.
-void renderPaced(TimedStream& stream, std::chrono::steady_clock::time_point from,
-                 int64_t periodNs, uint32_t count) {
-#if _WIN32
-  // The default timer of Windows ticks every 15.6 ms; the pace of a stream
-  // needs 1 ms, as audio hosts set it (ticket 38).
-  timeBeginPeriod(1);
-#endif
-  for (uint32_t i = 1; i <= count; ++i) {
-    std::this_thread::sleep_until(from + std::chrono::nanoseconds(periodNs) * i);
-    stream.render(256);
-  }
-#if _WIN32
-  timeEndPeriod(1);
-#endif
 }
 
 // The clock of the render thread for the scope of a test, advanced by the
@@ -866,8 +840,10 @@ AUD_TEST(graph_timing_reports_the_last_block) {
   f.commit([&] { f.connect(osc, AUD_GRAPH_NODE); });
   aud_graph_start(f.graph);
   TimedStream stream(f, 1000000000LL, 480);
+  // The test clock sets the gaps between the renders exactly.
+  ManualClock clock;
   stream.render(256);
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  clock.advance(20000000);
   stream.render(128);
   t = timingOf(f.graph, &result);
   AUD_CHECK(result == AUD_OK);
@@ -877,26 +853,31 @@ AUD_TEST(graph_timing_reports_the_last_block) {
   AUD_CHECK(t.host_time_ns == stream.atFrame(256));
   AUD_CHECK(t.output_latency_frames == 480);
   AUD_CHECK(t.nominal_period_ns == 5333333);
-  AUD_CHECK(t.max_period_ns >= 20000000);
+  AUD_CHECK(t.max_period_ns == 20000000);
   AUD_CHECK(t.time_filter_resets == 0);
   // The histogram holds the one gap; the first render counts nothing.
   AUD_CHECK(periodTotal(t) == 1);
-  AUD_CHECK(periodPercentileNs(t, 0.999) >= 20000000);
+  AUD_CHECK(t.period_histogram[200] == 1);  // 20 ms
+  AUD_CHECK(periodPercentileNs(t, 0.999) == 20100000);
   // A reset of the filter starts the measure again: the render that reset
   // it counts nothing, like the first render of a stream; the next one is
   // the first gap counted.
   stream.position += 100000;
+  clock.advance(5333333);
   stream.render(256);
   t = timingOf(f.graph);
   AUD_CHECK(t.time_filter_resets == 1);
   AUD_CHECK(t.max_period_ns == 0);
   AUD_CHECK(periodTotal(t) == 0);
   AUD_CHECK(periodPercentileNs(t, 0.999) == 0);
+  clock.advance(5333333);
   stream.render(256);
   t = timingOf(f.graph);
   AUD_CHECK(t.time_filter_resets == 1);
+  AUD_CHECK(t.max_period_ns == 5333333);
   AUD_CHECK(periodTotal(t) == 1);
-  AUD_CHECK(periodPercentileNs(t, 0.999) < 20000000);
+  AUD_CHECK(t.period_histogram[53] == 1);  // 5.33 ms
+  AUD_CHECK(periodPercentileNs(t, 0.999) == 5400000);
   // Offline: the longest block.
   aud_graph_stop(f.graph);
   aud_graph_start(f.graph);
@@ -979,22 +960,33 @@ AUD_TEST(graph_timing_histogram_drops_the_gap_that_reset_the_filter) {
   // the time filter resets. The gap that reset it is no sample of the
   // new measure - the histogram counts the renders after the reset only,
   // none of them in the overflow bin, so p99.9 is the callback again and
-  // not the edge of the histogram.
-  renderPaced(stream, std::chrono::steady_clock::now(), 5333333, 20);
-  std::this_thread::sleep_for(std::chrono::milliseconds(60));
+  // not the edge of the histogram. The test clock sets the gaps exactly.
+  ManualClock clock;
+  auto renderCallbacks = [&](uint32_t count) {
+    for (uint32_t i = 0; i < count; ++i) {
+      clock.advance(5333333);
+      stream.render(256);
+    }
+  };
+  renderCallbacks(20);
+  AudGraphTiming t = timingOf(f.graph);
+  AUD_CHECK(periodTotal(t) == 19);  // the first render counts nothing
+  AUD_CHECK(t.period_histogram[53] == 19);
+  clock.advance(60000000);
   stream.position += 100000;
   stream.render(256);
-  AudGraphTiming t = timingOf(f.graph);
+  t = timingOf(f.graph);
   AUD_CHECK(t.time_filter_resets == 1);
   AUD_CHECK(periodTotal(t) == 0);
   AUD_CHECK(t.max_period_ns == 0);
-  renderPaced(stream, std::chrono::steady_clock::now(), 5333333, 20);
+  renderCallbacks(20);
   t = timingOf(f.graph);
   AUD_CHECK(t.time_filter_resets == 1);
   AUD_CHECK(periodTotal(t) == 20);
+  AUD_CHECK(t.period_histogram[53] == 20);  // 5.33 ms
   AUD_CHECK(t.period_histogram[AUD_GRAPH_PERIOD_BINS] == 0);
-  AUD_CHECK(t.max_period_ns < 50000000);
-  AUD_CHECK(periodPercentileNs(t, 0.999) < 50000000);
+  AUD_CHECK(t.max_period_ns == 5333333);
+  AUD_CHECK(periodPercentileNs(t, 0.999) == 5400000);
 }
 
 AUD_TEST(graph_timing_histogram_takes_the_gap_of_split_callbacks) {
@@ -1004,31 +996,22 @@ AUD_TEST(graph_timing_histogram_takes_the_gap_of_split_callbacks) {
   aud_graph_start(f.graph);
   TimedStream stream(f);
   // A stream that splits a callback of 10.7 ms into two renders back to
-  // back: half of the gaps are near zero, p99.9 is the callback. The gap
-  // within a pair is the time one render takes, which the thread
-  // sanitizer on a loaded host stretches by milliseconds. The test sleeps
-  // the callback after each pair, so no gap between the pairs falls below
-  // it; the bin of 10.6 ms just below the callback tells the gaps apart,
-  // and a render may take up to 10.6 ms.
+  // back: half of the gaps are zero, p99.9 is the callback. The test
+  // clock stands still within a pair and moves by the callback between
+  // the pairs, so each gap falls into its bin exactly.
+  ManualClock clock;
   for (uint32_t i = 0; i < 20; ++i) {
-    if (i > 0) std::this_thread::sleep_for(std::chrono::nanoseconds(10666667));
+    if (i > 0) clock.advance(10666667);
     stream.render(256);
     stream.render(256);
   }
   const AudGraphTiming t = timingOf(f.graph);
   AUD_CHECK(periodTotal(t) == 39);
-  const uint32_t callbackBin = 106;  // 10.6 ms
-  uint64_t belowCallback = 0;
-  for (uint32_t i = 0; i < callbackBin; ++i) {
-    belowCallback += t.period_histogram[i];
-  }
-  AUD_CHECK(belowCallback == 20);
+  AUD_CHECK(t.period_histogram[0] == 20);    // within a pair
+  AUD_CHECK(t.period_histogram[106] == 19);  // 10.67 ms, between the pairs
   // The median, as the Dart side reads it, is a gap within a pair.
-  AUD_CHECK(periodPercentileNs(t, 0.5) <=
-            int64_t{callbackBin} * AUD_GRAPH_PERIOD_BIN_NS);
-  // With 39 gaps p99.9 is the longest one; a loaded host overshoots its
-  // sleep by several milliseconds, so only the lower bound is tight.
-  const int64_t p999 = periodPercentileNs(t, 0.999);
-  AUD_CHECK(p999 >= 10700000 && p999 < 40000000);
-  AUD_CHECK(t.max_period_ns >= 10666667);
+  AUD_CHECK(periodPercentileNs(t, 0.5) == 100000);
+  // With 39 gaps p99.9 is the longest one.
+  AUD_CHECK(periodPercentileNs(t, 0.999) == 10700000);
+  AUD_CHECK(t.max_period_ns == 10666667);
 }

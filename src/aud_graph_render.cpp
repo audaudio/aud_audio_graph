@@ -202,17 +202,26 @@ uint32_t noteKey(const AudEvent& event) {
 // The rank of an event among the events of its node at one offset: a note
 // off before the rest, the rest before note ons, each rank in the order the
 // events came in (interop-002). A note off ranks first only when its pitch
-// sounds - it can close an earlier note, so that a note on of the same
-// pitch retriggers. The note off of a pitch that does not sound belongs to
-// a note on of this block and keeps its order behind it: swapped, a note on
-// and its own note off at the same time would hang the note (ticket 20).
-uint32_t rankOf(const AudEvent& event, const NodeInstance* instance) {
+// sounds and it is the first note off of its pitch in the block - it can
+// close an earlier note, so that a note on of the same pitch retriggers.
+// Only one note off closes the earlier note; any other belongs to a note
+// on of this block and keeps its order behind it: swapped, a note on and
+// its own note off at the same time would hang the note (ticket 20). When
+// the block's note offs fill the table, the rest keep their order too.
+uint32_t rankOf(const AudGraph* graph, const AudEvent& event,
+                NodeInstance* instance) {
   if (event.type != AUD_EVENT_UMP) return 1;
   if (aud_ump_is_note_on(event.words[0], event.words[1])) return 2;
-  if (aud_ump_is_note_off(event.words[0], event.words[1])) {
-    return instance->notes.contains(noteKey(event)) ? 0 : 2;
+  if (!aud_ump_is_note_off(event.words[0], event.words[1])) return 1;
+  if (instance->closedBlock != graph->blockSerial) {
+    instance->closedNotes.count = 0;
+    instance->closedBlock = graph->blockSerial;
   }
-  return 1;
+  const uint32_t key = noteKey(event);
+  if (!instance->notes.contains(key) || instance->closedNotes.contains(key)) {
+    return 2;
+  }
+  return instance->closedNotes.add(key) ? 0 : 2;
 }
 
 // Whether the block's event table takes another event.
@@ -230,7 +239,7 @@ bool addBlockEvent(AudGraph* graph, uint32_t node, const AudEvent& event,
   }
   BlockEvent& entry = graph->blockEvents[graph->numBlockEvents];
   entry.node = node;
-  entry.rank = rankOf(event, graph->current->nodes[node].instance);
+  entry.rank = rankOf(graph, event, graph->current->nodes[node].instance);
   entry.sequence = sequence;
   entry.arrival = graph->numBlockEvents++;
   entry.event = event;
@@ -1963,6 +1972,7 @@ void finishRetirement(AudGraph* graph, uint32_t frames) {
 
 void resetScratch(AudGraph* graph) {
   graph->numBlockEvents = 0;
+  graph->blockSerial += 1;
   graph->numEmitted = 0;
   graph->numPopped = 0;
   graph->diagnostics = BlockDiagnostics{};

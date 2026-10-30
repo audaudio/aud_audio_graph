@@ -380,6 +380,28 @@ AUD_TEST(keeps_a_short_note_in_order_and_retriggers_a_sounding_one) {
   AUD_CHECK(g_records.size() == 2);
   AUD_CHECK(aud_ump_is_note_off(g_records[0].word0, 0) &&
             aud_ump_is_note_on(g_records[1].word0, 0));
+  // Two notes of a sounding pitch in one block, as late events bring them
+  // all to the block start: only the first note off closes the earlier
+  // note, the second keeps its place behind the note on it belongs to.
+  g_records.clear();
+  AUD_CHECK(aud_graph_send_event(f.graph, recorder, &off, nullptr, 0) == AUD_OK);
+  AUD_CHECK(aud_graph_send_event(f.graph, recorder, &on, nullptr, 0) == AUD_OK);
+  AUD_CHECK(aud_graph_send_event(f.graph, recorder, &off, nullptr, 0) == AUD_OK);
+  f.render(256);
+  AUD_CHECK(g_records.size() == 3);
+  AUD_CHECK(aud_ump_is_note_off(g_records[0].word0, 0) &&
+            aud_ump_is_note_on(g_records[1].word0, 0) &&
+            aud_ump_is_note_off(g_records[2].word0, 0));
+  // The next block closes the pitch afresh.
+  g_records.clear();
+  AUD_CHECK(aud_graph_send_event(f.graph, recorder, &on, nullptr, 0) == AUD_OK);
+  f.render(256);
+  AUD_CHECK(aud_graph_send_event(f.graph, recorder, &on, nullptr, 0) == AUD_OK);
+  AUD_CHECK(aud_graph_send_event(f.graph, recorder, &off, nullptr, 0) == AUD_OK);
+  f.render(256);
+  AUD_CHECK(g_records.size() == 3);
+  AUD_CHECK(aud_ump_is_note_off(g_records[1].word0, 0) &&
+            aud_ump_is_note_on(g_records[2].word0, 0));
 }
 
 AUD_TEST(keeps_the_events_of_a_render_request_at_one_offset_in_order) {

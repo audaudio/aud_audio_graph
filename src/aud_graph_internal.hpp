@@ -315,6 +315,11 @@ struct NodeInstance {
   // Realtime thread.
   uint32_t rtIndex = UINT32_MAX;  // index in the adopted program
   NoteTracker notes;
+  // The keys of the note offs the block brought so far, of the block
+  // `closedBlock` only: a note off ranks first only as the first of its
+  // pitch (rankOf).
+  NoteTracker closedNotes;
+  uint64_t closedBlock = UINT64_MAX;
   // The notes a node that passes its events on handed out of the graph,
   // each with the output it left on in the port of its key (ticket 37).
   NoteTracker passedNotes;
@@ -700,6 +705,7 @@ struct AudGraph {
   uint32_t numPopped = 0;
   std::vector<aud::BlockEvent> blockEvents;
   uint32_t numBlockEvents = 0;
+  uint64_t blockSerial = 0;  // counts the blocks of the realtime thread
   std::vector<AudEvent> nodeEvents;
   std::vector<aud::EmittedEvent> emitted;
   uint32_t numEmitted = 0;
