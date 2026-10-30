@@ -5,7 +5,8 @@
 // found in the LICENSE file in the root of this package.
 
 // Builds and runs the native tests of the graph engine, all of them with
-// the debug watchdog (`AUD_GRAPH_WATCHDOG`), in up to three builds
+// the debug watchdog (`AUD_GRAPH_WATCHDOG`) and the replaceable clock of
+// the render thread (`AUD_GRAPH_TEST_CLOCK`), in up to three builds
 // (ticket 20):
 //
 // - the address and the undefined behaviour sanitizer,
@@ -167,6 +168,7 @@ function build(name, compiler, extraFlags, sources, headers, coreSrc) {
     '-Wno-unused-parameter',
     '-fno-omit-frame-pointer',
     '-DAUD_GRAPH_WATCHDOG=1',
+    '-DAUD_GRAPH_TEST_CLOCK=1',
     `-I${path.join(root, 'src')}`,
     `-I${coreSrc}`,
     '-o',

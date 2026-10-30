@@ -29,6 +29,7 @@
 
 #include "aud_audio_graph.h"
 #include "aud_graph_fixture.hpp"
+#include "aud_graph_test_clock.hpp"
 #include "aud_test.hpp"
 #include "aud_ump.h"
 
@@ -97,6 +98,23 @@ void renderPaced(TimedStream& stream, std::chrono::steady_clock::time_point from
   timeEndPeriod(1);
 #endif
 }
+
+// The clock of the render thread for the scope of a test, advanced by the
+// test alone: the gaps the engine measures are the ones the test sets,
+// however late the host schedules it.
+std::atomic<int64_t> g_manualNowNs{0};
+int64_t manualNowNs() { return g_manualNowNs.load(std::memory_order_relaxed); }
+
+struct ManualClock {
+  ManualClock() {
+    g_manualNowNs.store(1000000000LL, std::memory_order_relaxed);
+    aud::setTestClock(manualNowNs);
+  }
+  ~ManualClock() { aud::setTestClock(nullptr); }
+  ManualClock(const ManualClock&) = delete;
+  ManualClock& operator=(const ManualClock&) = delete;
+  void advance(int64_t ns) { g_manualNowNs.fetch_add(ns, std::memory_order_relaxed); }
+};
 
 }  // namespace
 
@@ -926,21 +944,26 @@ AUD_TEST(graph_timing_histogram_ignores_a_single_gap_at_start_up) {
   TimedStream stream(f);
   // The stream of an iPhone: a start-up gap of 177 ms, then a callback
   // every 5.33 ms. The maximum is the gap; p99.9 of 1001 gaps is not.
+  // The test clock sets the gaps exactly: a sanitizer or a loaded host
+  // that wakes a sleeping test late would move p99.9 otherwise.
+  ManualClock clock;
   stream.render(256);
-  std::this_thread::sleep_for(std::chrono::milliseconds(177));
+  clock.advance(177000000);
   stream.render(256);
-  renderPaced(stream, std::chrono::steady_clock::now(), 5333333, 1000);
+  for (uint32_t i = 0; i < 1000; ++i) {
+    clock.advance(5333333);
+    stream.render(256);
+  }
   const AudGraphTiming t = timingOf(f.graph);
   AUD_CHECK(t.time_filter_resets == 0);
-  AUD_CHECK(t.max_period_ns >= 177000000);
+  AUD_CHECK(t.max_period_ns == 177000000);
   AUD_CHECK(periodTotal(t) == 1001);
+  AUD_CHECK(t.period_histogram[53] == 1000);  // 5.33 ms
   AUD_CHECK(t.period_histogram[AUD_GRAPH_PERIOD_BINS] == 1);
-  // This host paces with jitter, so the bounds are wide: the median is
-  // the callback, p99.9 stays far below the start-up gap.
-  const int64_t p50 = periodPercentileNs(t, 0.5);
-  AUD_CHECK(p50 >= 4000000 && p50 < 10000000);
-  const int64_t p999 = periodPercentileNs(t, 0.999);
-  AUD_CHECK(p999 >= 5400000 && p999 < 40000000);
+  // The median is the callback, and so is p99.9: the start-up gap is the
+  // one render in a thousand above it.
+  AUD_CHECK(periodPercentileNs(t, 0.5) == 5400000);
+  AUD_CHECK(periodPercentileNs(t, 0.999) == 5400000);
   AUD_CHECK(periodPercentileNs(t, 1.0) > AUD_GRAPH_PERIOD_BINS * AUD_GRAPH_PERIOD_BIN_NS);
   AUD_CHECK(f.stats().realtime_violations == 0);
 }

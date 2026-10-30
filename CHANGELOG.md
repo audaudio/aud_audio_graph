@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.4 - 2026-10-30
+
+### Changed
+
+- Make the timing histogram test independent of sleeps
+- Document the replaceable render clock of the tests
+- Drop an unused include and double blank lines
+
 ## 0.6.3 - 2026-10-29
 
 ### Added
