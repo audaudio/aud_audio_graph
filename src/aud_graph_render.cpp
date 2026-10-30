@@ -17,7 +17,6 @@
 #include <cmath>
 #include <cstring>
 
-#include "aud_clock.h"
 #include "aud_graph_internal.hpp"
 #include "aud_graph_test_clock.hpp"
 #include "aud_graph_watchdog.hpp"
