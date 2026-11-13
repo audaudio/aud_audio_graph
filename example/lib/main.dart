@@ -5,7 +5,7 @@
 // found in the LICENSE file in the root of this package.
 
 import 'package:aud_audio_graph/aud_audio_graph_ffi.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 void main() {
   runApp(const AudGraphExampleApp());
