@@ -36,20 +36,17 @@ packages:
   aud_audio_core:
     dependency: "direct main"
     description:
-      path: "."
-      resolved-ref: "39bbeacb45d731e87dc374bff87d8599b3426fe7"
-      tag-pattern: "{{version}}"
-      url: "git@github.com:audaudio/aud_audio_core.git"
-    source: git
+      path: "../aud_audio_core"
+      relative: true
+    source: path
     version: "0.6.2"
   aud_midi_standard:
     dependency: "direct dev"
     description:
-      name: aud_midi_standard
-      sha256: "92559c6e1534b892f1029a3bb6c08a07f2e96cda1d0dcca227271d3e9353306c"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.3.0"
+      path: "../aud_midi_standard"
+      relative: true
+    source: path
+    version: "0.3.1"
   boolean_selector:
     dependency: transitive
     description:
